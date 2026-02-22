@@ -557,7 +557,7 @@ The DEX runs as Layer 2 smart contracts:
 All consensus-critical computation uses:
 - `u128` integer arithmetic (no floating-point)
 - `checked_mul`, `checked_add` (overflow protection)
-- `isqrt` via Newton's method (deterministic across all platforms)
+- `isqrt` via Newton's method for AMM/DEX math (deterministic across all platforms)
 - Sorted arrays for median (deterministic ordering)
 - Basis points (10,000 = 100%) instead of percentages
 

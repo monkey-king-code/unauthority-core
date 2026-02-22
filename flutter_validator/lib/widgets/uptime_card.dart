@@ -57,7 +57,7 @@ class UptimeCard extends StatelessWidget {
               child: Column(
                 children: [
                   Text(
-                    '${validatorInfo.uptimePercentage.toStringAsFixed(2)}%',
+                    '${validatorInfo.uptimePercentage}%',
                     style: TextStyle(
                       fontSize: 48,
                       fontWeight: FontWeight.bold,
@@ -87,7 +87,7 @@ class UptimeCard extends StatelessWidget {
                       style: TextStyle(fontSize: 12, color: Colors.grey),
                     ),
                     Text(
-                      '${validatorInfo.uptimePercentage.toStringAsFixed(1)}%',
+                      '${validatorInfo.uptimePercentage}%',
                       style: const TextStyle(
                         fontSize: 12,
                         fontWeight: FontWeight.bold,
@@ -99,7 +99,7 @@ class UptimeCard extends StatelessWidget {
                 ClipRRect(
                   borderRadius: BorderRadius.circular(4),
                   child: LinearProgressIndicator(
-                    value: validatorInfo.uptimePercentage / 100,
+                    value: validatorInfo.uptimePercentage / 100.0,
                     minHeight: 8,
                     backgroundColor: Colors.grey.shade800,
                     valueColor: AlwaysStoppedAnimation<Color>(
@@ -142,7 +142,7 @@ class UptimeCard extends StatelessWidget {
             ),
 
             // Warning Messages
-            if (validatorInfo.uptimePercentage < 95.0) ...[
+            if (validatorInfo.uptimePercentage < 95) ...[
               const SizedBox(height: 16),
               Container(
                 padding: const EdgeInsets.all(12),

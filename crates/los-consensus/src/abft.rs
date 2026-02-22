@@ -9,7 +9,7 @@
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 use serde::{Deserialize, Serialize};
-use sha3::{Digest, Keccak256};
+use sha3::{Digest, Sha3_256};
 use std::collections::{BTreeMap, VecDeque};
 
 /// Block structure for consensus
@@ -23,9 +23,9 @@ pub struct Block {
 }
 
 impl Block {
-    /// Calculate Keccak256 hash of the block
+    /// Calculate SHA3-256 hash of the block
     pub fn calculate_hash(&self) -> String {
-        let mut hasher = Keccak256::new();
+        let mut hasher = Sha3_256::new();
         hasher.update(format!("{}", self.height).as_bytes());
         hasher.update(self.timestamp.to_le_bytes());
         hasher.update(&self.data);
@@ -59,7 +59,7 @@ pub struct ConsensusMessage {
 
 impl ConsensusMessage {
     /// Create new consensus message with keyed MAC (SECURITY P0-3)
-    /// Uses Keccak256(secret || message_data) — safe for SHA-3 family (no length extension)
+    /// Uses SHA3-256(secret || message_data) — safe for SHA-3 family (no length extension)
     pub fn new(
         msg_type: ConsensusMessageType,
         view: u64,
@@ -105,7 +105,7 @@ impl ConsensusMessage {
         }
     }
 
-    /// Compute keyed MAC: Keccak256(secret || msg_type || view || seq || block_hash || sender || timestamp)
+    /// Compute keyed MAC: SHA3-256(secret || msg_type || view || seq || block_hash || sender || timestamp)
     fn compute_keyed_mac(
         secret: &[u8],
         msg_type: &ConsensusMessageType,
@@ -115,7 +115,7 @@ impl ConsensusMessage {
         sender: &str,
         timestamp: u64,
     ) -> Vec<u8> {
-        let mut hasher = Keccak256::new();
+        let mut hasher = Sha3_256::new();
         hasher.update(secret); // Key material first
         hasher.update(format!("{:?}", msg_type).as_bytes());
         hasher.update(view.to_le_bytes());
@@ -229,7 +229,7 @@ impl ABFTConsensus {
     }
 
     /// Set shared secret for MAC authentication.
-    /// Should be derived from node's secret key (e.g., Keccak256(sk)).
+    /// Should be derived from node's secret key (e.g., SHA3-256(sk)).
     pub fn set_shared_secret(&mut self, secret: Vec<u8>) {
         self.shared_secret = secret;
     }

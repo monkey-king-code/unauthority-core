@@ -168,7 +168,7 @@ class ValidatorInfo {
   final int stake; // In LOS (backend already divides by CIL_PER_LOS)
   final bool isActive;
   final bool isGenesis; // Genesis bootstrap validator
-  final double uptimePercentage;
+  final int uptimePercentage; // Integer percent (0-100), matches backend u64
   final int totalSlashed; // In CIL
   final String status;
 
@@ -177,13 +177,13 @@ class ValidatorInfo {
     required this.stake,
     required this.isActive,
     this.isGenesis = false,
-    this.uptimePercentage = 99.5,
+    this.uptimePercentage = 100,
     this.totalSlashed = 0,
     this.status = 'active',
   });
 
   factory ValidatorInfo.fromJson(Map<String, dynamic> json) {
-    // FIX C11-04: Type-safe int/double parsing for all numeric fields
+    // FIX C11-04: Type-safe int parsing for all numeric fields
     return ValidatorInfo(
       address: (json['address'] ?? '').toString(),
       stake: _parseIntField(json['stake']),
@@ -191,18 +191,10 @@ class ValidatorInfo {
           json['is_active'] == 1 ||
           (json['status'] ?? '').toString().toLowerCase() == 'active',
       isGenesis: json['is_genesis'] == true,
-      uptimePercentage: _parseDouble(json['uptime_percentage'], 99.5),
+      uptimePercentage: _parseIntField(json['uptime_percentage']),
       totalSlashed: _parseIntField(json['total_slashed']),
       status: (json['status'] ?? 'active').toString(),
     );
-  }
-
-  /// Type-safe double parser.
-  static double _parseDouble(dynamic v, [double fallback = 0.0]) {
-    if (v == null) return fallback;
-    if (v is double) return v;
-    if (v is int) return v.toDouble();
-    return double.tryParse(v.toString()) ?? fallback;
   }
 
   /// Backend already sends stake as integer LOS (balance / CIL_PER_LOS).
@@ -237,19 +229,19 @@ class ValidatorInfo {
   String get totalSlashedDisplay =>
       BlockchainConstants.formatCilAsLos(totalSlashed);
 
-  /// Uptime status text
+  /// Uptime status text (integer percent comparison)
   String get uptimeStatus {
-    if (uptimePercentage >= 99.0) return 'Excellent';
-    if (uptimePercentage >= 95.0) return 'Good';
-    if (uptimePercentage >= 90.0) return 'Warning';
+    if (uptimePercentage >= 99) return 'Excellent';
+    if (uptimePercentage >= 95) return 'Good';
+    if (uptimePercentage >= 90) return 'Warning';
     return 'Critical';
   }
 
-  /// Uptime color
+  /// Uptime color (integer percent comparison)
   Color get uptimeColor {
-    if (uptimePercentage >= 99.0) return const Color(0xFF4CAF50);
-    if (uptimePercentage >= 95.0) return const Color(0xFF8BC34A);
-    if (uptimePercentage >= 90.0) return const Color(0xFFFF9800);
+    if (uptimePercentage >= 99) return const Color(0xFF4CAF50);
+    if (uptimePercentage >= 95) return const Color(0xFF8BC34A);
+    if (uptimePercentage >= 90) return const Color(0xFFFF9800);
     return const Color(0xFFF44336);
   }
 }

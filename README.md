@@ -119,53 +119,31 @@ See [Architecture Deep Dive](docs/ARCHITECTURE.md) for detailed crate documentat
 
 | Allocation | Amount (LOS) | Percentage |
 |---|---|---|
-| **Public (Proof-of-Burn)** | 21,158,413 | ~96.5% |
+| **Public (PoW Mining)** | 21,158,413 | ~96.5% |
 | **Dev Treasury** | 773,823 | ~3.5% |
 | **Bootstrap Validators (4×1,000)** | 4,000 | ~0.02% |
 | **Total** | **21,936,236** | **100%** |
 
 
-### How to Acquire LOS (Proof-of-Burn)
+### How to Acquire LOS (PoW Mining)
 
+LOS tokens are distributed through **Proof-of-Work Mining**. Miners run a full validator node (`uat-node --mine`) and solve SHA3-256 hash puzzles to earn block rewards.
 
-LOS tokens are acquired through **Proof-of-Burn**: burn ETH or BTC to a provably unspendable address, and receive LOS proportional to the USD value burned. Burns are verified by multi-validator oracle consensus using pure integer arithmetic.
+**Mining Mechanics:**
+- **Algorithm:** `SHA3-256(LOS_MINE_V1 ‖ chain_id ‖ address ‖ epoch ‖ nonce)`
+- **Reward:** 100 LOS per epoch (1 hour), halving every 8,760 epochs (~1 year)
+- **Difficulty:** Starts at 20 leading zero bits, auto-adjusts based on miner count
+- **Deduplication:** 1 reward per address per epoch — no double-mining
+- **Requirement:** Must run a full validator node (no external mining API)
 
-> **Transparency Guarantee:**
-> All ETH and BTC sent for Proof-of-Burn are sent to addresses that are mathematically unspendable and **cannot be accessed or withdrawn by anyone, including the developers**. These are industry-standard burn addresses:
-
-| Asset | Burn Address |
-|---|---|
-| ETH | `0x000000000000000000000000000000000000dEaD` |
-| BTC | `1BitcoinEaterAddressDontSendf59kuE` |
-
-Funds sent to these addresses are permanently removed from circulation and are **not controlled or owned by the Unauthority team or any third party**. You can verify all burn transactions on the public blockchains (Ethereum and Bitcoin).
-
-| Asset | Burn Address |
-|---|---|
-| ETH | `0x000000000000000000000000000000000000dEaD` |
-| BTC | `1BitcoinEaterAddressDontSendf59kuE` |
-
-#### PoB Price Formula
-
-- **Amount LOS received:**
-  
-	$\text{LOS} = \frac{\text{USD Burned}}{\text{Initial Price}}$
-
-- **Initial Price:**
-  
-	$\text{Initial Price} = 0.021\ \text{USD}$ (1 LOS = $0.021 at genesis)
-
-- **Example:**
-  
-	Burn $210 USD$ → $210 / 0.021 = 10,000$ LOS
-
-**Note:** The price per LOS may increase in future epochs if specified by governance or protocol rules. See [Whitepaper](docs/WHITEPAPER.md) for details.
+> **Fair Distribution:**
+> There is no pre-mine, no ICO, no token sale. Mining is the only way to acquire LOS from the public pool. Anyone can mine by running a validator node.
 
 ### Validator Rewards
 
 - **Pool:** 500,000 LOS (non-inflationary, from total supply)
-- **Per Epoch:** 5,000 LOS, halving every 48 epochs
-- **Formula:** `reward = budget × √(stake) / Σ√(all_stakes)` (integer sqrt only)
+- **Per Epoch:** 5,000 LOS, halving every 48 epochs (~4 years)
+- **Formula:** `reward_i = budget × stake_i / Σ(all_stakes)` (pure linear, Sybil-neutral)
 - **Eligibility:** Min 1,000 LOS stake, ≥95% uptime
 
 ---
@@ -190,7 +168,7 @@ The validator node exposes a REST API (35+ endpoints) and a gRPC API.
 | GET | `/reward-info` | Reward pool & epoch info |
 | GET | `/metrics` | Prometheus-compatible metrics |
 | POST | `/send` | Send LOS transaction |
-| POST | `/burn` | Proof-of-Burn (ETH/BTC → LOS) |
+| POST | `/burn` | Burn LOS tokens (with consensus) |
 | POST | `/register-validator` | Register as network validator |
 | POST | `/deploy-contract` | Deploy WASM smart contract |
 | POST | `/call-contract` | Execute smart contract function |

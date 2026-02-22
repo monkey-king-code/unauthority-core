@@ -27,7 +27,7 @@ use los_consensus::abft::{ABFTConsensus, Block as ConsensusBlock};
 use los_consensus::checkpoint::FinalityCheckpoint;
 use los_consensus::slashing::{DOUBLE_SIGNING_SLASH_BPS, DOWNTIME_SLASH_BPS, MIN_UPTIME_BPS};
 use los_consensus::voting::calculate_voting_power;
-use los_core::validator_rewards::{isqrt, ValidatorRewardPool};
+use los_core::validator_rewards::ValidatorRewardPool;
 use los_core::{
     Block, BlockType, Ledger, BASE_FEE_CIL, CIL_PER_LOS, MIN_VALIDATOR_STAKE_CIL,
     REWARD_HALVING_INTERVAL_EPOCHS, REWARD_RATE_INITIAL_CIL, VALIDATOR_REWARD_POOL_CIL,
@@ -38,6 +38,20 @@ use los_crypto::{generate_keypair, public_key_to_address, sign_message, validate
 // HELPERS
 // ============================================================================
 
+/// Integer square root (Newton's method) — local copy for test use.
+/// Production `isqrt` is in `los_contracts` (for AMM/DEX math).
+fn isqrt(n: u128) -> u128 {
+    if n == 0 {
+        return 0;
+    }
+    let mut x = n;
+    let mut y = x.div_ceil(2);
+    while y < x {
+        x = y;
+        y = (x + n / x) / 2;
+    }
+    x
+}
 /// Simulated node for multi-validator E2E tests.
 struct SimNode {
     address: String,

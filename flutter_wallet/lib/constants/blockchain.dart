@@ -10,7 +10,7 @@ class BlockchainConstants {
   BlockchainConstants._();
 
   /// Wallet version — synced with pubspec.yaml
-  static const String version = '1.0.9';
+  static const String version = '1.0.13';
 
   /// Fixed total supply of LOS tokens
   static const int totalSupply = 21936236;

@@ -17,7 +17,7 @@
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 use serde::{Deserialize, Serialize};
-use sha3::{Digest, Keccak256};
+use sha3::{Digest, Sha3_256};
 use std::collections::BTreeSet;
 
 use crate::CIL_PER_LOS;
@@ -339,7 +339,7 @@ impl MiningState {
 /// Compute the mining hash: SHA3-256(address || epoch_le_bytes || nonce_le_bytes).
 /// The hash is deterministic and bound to the miner's address + epoch + nonce.
 pub fn compute_mining_hash(address: &str, epoch: u64, nonce: u64) -> [u8; 32] {
-    let mut hasher = Keccak256::new();
+    let mut hasher = Sha3_256::new();
     // Domain separator to prevent collision with block hashes
     hasher.update(b"LOS_MINE_V1");
     // Chain ID prevents cross-network proof replay

@@ -472,10 +472,11 @@ pub struct RewardPoolSummary {
 // ─────────────────────────────────────────────────────────────────
 // Integer square root (Newton's method) — deterministic across platforms
 // NOTE: No longer used for reward weights (C-01 linear fix).
-// Kept for backward compatibility and potential AMM/DEX use.
+// Kept for AMM/DEX math (LP token calculation). NOT for voting or rewards.
+// Scoped to crate to prevent external misuse for voting power.
 // ─────────────────────────────────────────────────────────────────
 #[allow(dead_code)]
-pub fn isqrt(n: u128) -> u128 {
+pub(crate) fn isqrt(n: u128) -> u128 {
     if n == 0 {
         return 0;
     }

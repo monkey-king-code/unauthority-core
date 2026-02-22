@@ -537,9 +537,9 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
     // Initialize shared secret and validator set
     {
         let mut abft = safe_lock(&abft_consensus);
-        // C-03 FIX: Set shared secret for MAC authentication (Keccak256 of node's secret key)
-        use sha3::{Digest as Sha3Digest, Keccak256 as Keccak256Hasher};
-        let mut hasher = Keccak256Hasher::new();
+        // C-03 FIX: Set shared secret for MAC authentication (SHA3-256 of node's secret key)
+        use sha3::{Digest as Sha3Digest, Sha3_256 as Sha3256Hasher};
+        let mut hasher = Sha3256Hasher::new();
         hasher.update(&*secret_key);
         hasher.update(b"LOS_CONSENSUS_MAC_V1");
         abft.set_shared_secret(hasher.finalize().to_vec());

@@ -78,7 +78,7 @@ Core blockchain primitives and state management. No I/O — pure logic.
 | `lib.rs` | `Block`, `AccountState`, `Ledger`, `BlockType`, PoW, genesis loading |
 | `distribution.rs` | Supply distribution tracking, burn accounting (u128 arithmetic) |
 | `oracle_consensus.rs` | Decentralized oracle BFT median aggregation (micro-USD u128) |
-| `bonding_curve.rs` | LOS pricing curve for Proof-of-Burn conversions |
+| `bonding_curve.rs` | LOS pricing curve (testnet-only, gated behind `#[cfg(not(feature = "mainnet"))]`) |
 | `validator_config.rs` | Validator configuration structures |
 | `validator_rewards.rs` | Reward pool distribution: `budget × stake / Σ(all_stakes)` (linear) |
 | `pow_mint.rs` | PoW mining engine: SHA3-256, epoch management, proof verification |
@@ -231,8 +231,8 @@ Account C:  [Mint 100] ──→ [Receive 20 from A] ──→ [Receive 10 from 
 |---|---|---|
 | `Send` | Debit from sender | Recipient address |
 | `Receive` | Credit to receiver | Hash of the Send block |
-| `Mint` | Token creation (genesis, burn reward) | Source reference |
-| `Burn` | Proof-of-Burn event | External TX hash |
+| `Mint` | Token creation (genesis, PoW mining reward) | Source reference (`MINE:epoch:nonce`) |
+| `Burn` | Token destruction (burning LOS) | Burn reference |
 | `Change` | Representative/validator delegation | New representative |
 
 ### Block Fields
@@ -268,20 +268,21 @@ Block {
 9. Broadcast BLOCK message to all peers for ledger sync
 ```
 
-## Data Flow: Proof-of-Burn
+## Data Flow: PoW Mining (Public Distribution)
 
 ```
-1. User burns ETH/BTC to dead address on source chain
-2. POST /burn with TXID → los-node
-3. Node gossips VOTE_REQ to all validators
-4. Each validator independently:
-   a. Fetches burn TX from blockchain explorer
-   b. Fetches ETH/BTC price from oracle
-   c. Submits signed oracle price (ORACLE_SUBMIT)
-   d. Returns signed vote (VOTE_RES)
-5. BFT median aggregation of all price submissions
-6. Once ≥2 validators confirm → Mint block created
-7. LOS minted to recipient = burn_usd_value / bonding_curve_price
+1. Miner runs full validator node with --mine flag
+2. Background thread grinds SHA3-256(LOS_MINE_V1 || chain_id || address || epoch || nonce)
+3. When hash meets difficulty target (≥N leading zero bits):
+   a. Creates Mint block with link = "MINE:epoch:nonce"
+   b. Signs with Dilithium5
+   c. Broadcasts via MINE_BLOCK:{json} gossip message
+4. Receiving validators independently verify:
+   a. PoW proof (SHA3-256 hash meets difficulty)
+   b. Epoch deduplication (1 reward per address per epoch)
+   c. Dilithium5 signature validity
+   d. Link format ("MINE:epoch:nonce")
+5. If valid → Mint block added to DAG, miner receives reward
 ```
 
 ---

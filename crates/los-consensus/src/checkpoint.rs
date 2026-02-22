@@ -12,7 +12,7 @@
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 use serde::{Deserialize, Serialize};
-use sha3::{Digest, Keccak256};
+use sha3::{Digest, Sha3_256};
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -109,7 +109,7 @@ impl FinalityCheckpoint {
 
     /// Calculate unique checkpoint ID (hash of height + block_hash + state_root)
     pub fn calculate_id(&self) -> String {
-        let mut hasher = Keccak256::new();
+        let mut hasher = Sha3_256::new();
         hasher.update(self.signing_data());
         format!("{:x}", hasher.finalize())
     }

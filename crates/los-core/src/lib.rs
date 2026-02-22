@@ -7,7 +7,7 @@
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 use serde::{Deserialize, Serialize};
-use sha3::{Digest, Keccak256};
+use sha3::{Digest, Sha3_256};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Maximum allowed timestamp drift from current time (5 minutes)
@@ -158,7 +158,7 @@ impl Block {
     /// Used for: (1) PoW mining, (2) message to sign/verify.
     /// Includes chain_id to prevent cross-chain replay attacks.
     pub fn signing_hash(&self) -> String {
-        let mut hasher = Keccak256::new();
+        let mut hasher = Sha3_256::new();
 
         // Chain ID domain separation — prevents replay across testnet/mainnet
         hasher.update(CHAIN_ID.to_le_bytes());
@@ -199,7 +199,7 @@ impl Block {
     /// This is the unique Block ID that includes ALL fields including signature.
     /// Prevents block ID collision if signature differs.
     pub fn calculate_hash(&self) -> String {
-        let mut hasher = Keccak256::new();
+        let mut hasher = Sha3_256::new();
         let sh = self.signing_hash();
         hasher.update(sh.as_bytes());
         // Signature MUST be in hash computation for block identity
@@ -330,7 +330,7 @@ impl Ledger {
     }
 
     /// DESIGN FIX D-7: Compute a deterministic state root hash from all account balances.
-    /// Uses SHA3-256 (Keccak256) over sorted (address, balance) pairs.
+    /// Uses SHA3-256 (NIST FIPS 202) over sorted (address, balance) pairs.
     /// BTreeMap guarantees deterministic iteration order, so all nodes
     /// with the same state will produce the same root hash.
     ///
@@ -339,8 +339,8 @@ impl Ledger {
     /// - ID messages (state comparison before sync)
     /// - Delta sync (skip sync when roots match)
     pub fn compute_state_root(&self) -> String {
-        use sha3::{Digest, Keccak256};
-        let mut hasher = Keccak256::new();
+        use sha3::{Digest, Sha3_256};
+        let mut hasher = Sha3_256::new();
         // BTreeMap iterates in sorted key order — deterministic
         for (addr, state) in &self.accounts {
             hasher.update(addr.as_bytes());
