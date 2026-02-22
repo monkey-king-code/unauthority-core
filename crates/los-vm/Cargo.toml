@@ -1,0 +1,22 @@
+[package]
+name = "los-vm"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = []
+mainnet = []
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["arbitrary_precision"] }
+blake3 = "1.5"
+hex = "0.4"
+wasmer = "4.3"
+wasmer-compiler-cranelift = "4.3"
+wasmer-middlewares = "4.3"
+chrono = "0.4"
+
+[[bin]]
+name = "los-vm"
+path = "src/main.rs"

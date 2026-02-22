@@ -1,0 +1,136 @@
+version: '3.8'
+
+# Unauthority (LOS) — 4-Validator Testnet via Docker
+# SECURITY: genesis_config.json has been stripped of private_key/seed_phrase.
+# If you regenerate genesis, re-strip secrets before deployment.
+#
+# IMPORTANT: Set LOS_SEED_PHRASE_V1..V4 in your environment or .env file
+# to maintain consistent validator identities across container restarts.
+# Without seed phrases, each restart generates a random keypair.
+#
+# Ports per container:
+#   REST API:  --port (3030, 3031, 3032, 3033)
+#   gRPC:      REST + 20000 (23030, 23031, 23032, 23033)
+#   P2P:       libp2p gossip over internal network
+#
+# Usage:
+#   docker compose up --build -d
+#   docker compose logs -f
+#   docker compose down
+
+services:
+  validator-1:
+    build: .
+    container_name: los-v1
+    hostname: validator-1
+    networks:
+      los-net:
+        ipv4_address: 172.20.0.11
+    ports:
+      - "3030:3030"
+      - "23030:23030"
+    volumes:
+      - v1-data:/data
+      - ./genesis_config.json:/app/genesis_config.json:ro
+    environment:
+      - LOS_NODE_ID=validator-1
+      - LOS_TESTNET_LEVEL=consensus
+      - LOS_BIND_ALL=1
+      - LOS_SEED_PHRASE=${LOS_SEED_PHRASE_V1}
+      - LOS_BOOTSTRAP_NODES=/ip4/172.20.0.12/tcp/4001,/ip4/172.20.0.13/tcp/4001,/ip4/172.20.0.14/tcp/4001
+    command: ["./los-node", "--port", "3030", "--data-dir", "/data"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:3030/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  validator-2:
+    build: .
+    container_name: los-v2
+    hostname: validator-2
+    networks:
+      los-net:
+        ipv4_address: 172.20.0.12
+    ports:
+      - "3031:3030"
+      - "23031:23030"
+    volumes:
+      - v2-data:/data
+      - ./genesis_config.json:/app/genesis_config.json:ro
+    environment:
+      - LOS_NODE_ID=validator-2
+      - LOS_TESTNET_LEVEL=consensus
+      - LOS_BIND_ALL=1
+      - LOS_SEED_PHRASE=${LOS_SEED_PHRASE_V2}
+      - LOS_BOOTSTRAP_NODES=/ip4/172.20.0.11/tcp/4001,/ip4/172.20.0.13/tcp/4001,/ip4/172.20.0.14/tcp/4001
+    command: ["./los-node", "--port", "3030", "--data-dir", "/data"]
+    restart: unless-stopped
+    depends_on:
+      validator-1:
+        condition: service_healthy
+
+  validator-3:
+    build: .
+    container_name: los-v3
+    hostname: validator-3
+    networks:
+      los-net:
+        ipv4_address: 172.20.0.13
+    ports:
+      - "3032:3030"
+      - "23032:23030"
+    volumes:
+      - v3-data:/data
+      - ./genesis_config.json:/app/genesis_config.json:ro
+    environment:
+      - LOS_NODE_ID=validator-3
+      - LOS_TESTNET_LEVEL=consensus
+      - LOS_BIND_ALL=1
+      - LOS_SEED_PHRASE=${LOS_SEED_PHRASE_V3}
+      - LOS_BOOTSTRAP_NODES=/ip4/172.20.0.11/tcp/4001,/ip4/172.20.0.12/tcp/4001,/ip4/172.20.0.14/tcp/4001
+    command: ["./los-node", "--port", "3030", "--data-dir", "/data"]
+    restart: unless-stopped
+    depends_on:
+      validator-1:
+        condition: service_healthy
+
+  validator-4:
+    build: .
+    container_name: los-v4
+    hostname: validator-4
+    networks:
+      los-net:
+        ipv4_address: 172.20.0.14
+    ports:
+      - "3033:3030"
+      - "23033:23030"
+    volumes:
+      - v4-data:/data
+      - ./genesis_config.json:/app/genesis_config.json:ro
+    environment:
+      - LOS_NODE_ID=validator-4
+      - LOS_TESTNET_LEVEL=consensus
+      - LOS_BIND_ALL=1
+      - LOS_SEED_PHRASE=${LOS_SEED_PHRASE_V4}
+      - LOS_BOOTSTRAP_NODES=/ip4/172.20.0.11/tcp/4001,/ip4/172.20.0.12/tcp/4001,/ip4/172.20.0.13/tcp/4001
+    command: ["./los-node", "--port", "3030", "--data-dir", "/data"]
+    restart: unless-stopped
+    depends_on:
+      validator-1:
+        condition: service_healthy
+
+networks:
+  los-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
+
+volumes:
+  v1-data:
+  v2-data:
+  v3-data:
+  v4-data:

@@ -1,0 +1,29 @@
+[package]
+name = "los-crypto-ffi"
+version = "0.1.0"
+edition = "2021"
+description = "C-ABI FFI bridge for Dilithium5 crypto — used by Flutter wallet via dart:ffi"
+
+# Standalone crate — not part of the main workspace
+[workspace]
+
+[lib]
+name = "los_crypto_ffi"
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+pqcrypto-dilithium = "0.5"
+pqcrypto-traits = "0.3"
+pqcrypto-internals = { version = "0.2", features = ["seeded"] }
+blake2 = "0.10"
+sha2 = "0.10"
+sha3 = "0.10"
+bs58 = "0.5"
+hex = "0.4"
+digest = "0.10"
+rand = "0.8"
+rand_chacha = "0.3"
+zeroize = "1"
+
+[patch.crates-io]
+pqcrypto-internals = { path = "pqcrypto-internals-seeded" }

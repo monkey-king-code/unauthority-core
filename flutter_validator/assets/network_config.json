@@ -1,0 +1,69 @@
+{
+  "version": 2,
+  "comment": "Bootstrap node addresses — 4 validators for round-robin failover. DO NOT hardcode in source.",
+  "testnet": {
+    "bootstrap_nodes": [
+      {
+        "name": "validator-1",
+        "onion": "drnqiaqi5vvqpubem6qzptptijygbf7ggjheri6k5yn4qbeezhgjweyd.onion",
+        "rest_port": 80,
+        "p2p_port": 4001,
+        "local_rest_port": 3030,
+        "local_p2p_port": 4030
+      },
+      {
+        "name": "validator-2",
+        "onion": "kpjv64bpekzqvnls2d5ss4sqhjdgi7maypfvceekxty2cfutjr4vgqid.onion",
+        "rest_port": 80,
+        "p2p_port": 4001,
+        "local_rest_port": 3031,
+        "local_p2p_port": 4031
+      },
+      {
+        "name": "validator-3",
+        "onion": "w3x7wqb7267mfgcxsqjuinxuijvdswg4j2zwcdl2fr5mohbaywomdbad.onion",
+        "rest_port": 80,
+        "p2p_port": 4001,
+        "local_rest_port": 3032,
+        "local_p2p_port": 4032
+      },
+      {
+        "name": "validator-4",
+        "onion": "xvulzhd5ekfmturmz7jdy3yguggyqwyx7jrysods7njvvzaicx72lwad.onion",
+        "rest_port": 80,
+        "p2p_port": 4001,
+        "local_rest_port": 3033,
+        "local_p2p_port": 4033
+      }
+    ]
+  },
+  "mainnet": {
+    "comment": "Genesis validator .onion addresses — LIVE since Feb 2026",
+    "bootstrap_nodes": [
+      {
+        "name": "genesis-validator-1",
+        "onion": "f3zfmhvverdljhddhxvdnkibrajd2cbolrfq4z6a5y2ifprf2xh34nid.onion",
+        "rest_port": 3030,
+        "p2p_port": 4030
+      },
+      {
+        "name": "genesis-validator-2",
+        "onion": "xchdcoebass6ewt7astm2ksacr55s7nd6l74qcmvkrm37t7pnqqf32qd.onion",
+        "rest_port": 3031,
+        "p2p_port": 4031
+      },
+      {
+        "name": "genesis-validator-3",
+        "onion": "7v5lqrgevfeyhb6aomt75dbagnkmxrthg6qehkxa2fv5ycxxam7e25qd.onion",
+        "rest_port": 3032,
+        "p2p_port": 4032
+      },
+      {
+        "name": "genesis-validator-4",
+        "onion": "7dbvneima7h5nc34x2c7frgyq64h64ipbes43pkd4lmc7hnfxzwl3lyd.onion",
+        "rest_port": 3033,
+        "p2p_port": 4033
+      }
+    ]
+  }
+}

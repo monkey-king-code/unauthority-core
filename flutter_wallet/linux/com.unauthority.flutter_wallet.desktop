@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=LOS Wallet
+Comment=Unauthority (LOS) — Decentralized Wallet
+Icon=com.unauthority.flutter_wallet
+Exec=flutter_wallet
+Terminal=false
+Categories=Finance;Network;BlockChain;
+Keywords=crypto;wallet;blockchain;los;unauthority;
+StartupWMClass=flutter_wallet

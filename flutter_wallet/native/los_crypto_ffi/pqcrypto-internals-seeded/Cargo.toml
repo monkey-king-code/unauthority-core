@@ -1,0 +1,26 @@
+[package]
+edition = "2021"
+name = "pqcrypto-internals"
+version = "0.2.11"
+build = "build.rs"
+links = "pqcrypto_internals"
+description = "Patched pqcrypto-internals with seeded randombytes for deterministic keygen"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "pqcrypto_internals"
+path = "src/lib.rs"
+
+[features]
+default = ["seeded"]
+seeded = ["rand", "rand_chacha"]
+
+[dependencies]
+getrandom = "0.3"
+libc = "0.2"
+rand = { version = "0.8", optional = true }
+rand_chacha = { version = "0.3", optional = true }
+
+[build-dependencies]
+cc = { version = "1.0", features = ["parallel"] }
+dunce = "1.0"

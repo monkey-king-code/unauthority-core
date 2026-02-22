@@ -1,0 +1,21 @@
+[package]
+name = "los-network"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+libp2p = { version = "0.53", features = ["tcp", "dns", "websocket", "noise", "yamux", "gossipsub", "mdns", "tokio", "macros"] }
+tokio = { version = "1.0", features = ["full"] }
+tokio-socks = "0.5"           # SOCKS5 proxy for Tor .onion connections
+futures = "0.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+log = "0.4"
+chacha20poly1305 = "0.10"     # Real AEAD encryption for P2P messages
+sha3 = "0.10"                 # FIX C12-10: Cryptographic MAC for SignerNode messages
+zeroize = "1.7"               # FIX C12-04: Zero CipherKey material on drop
+los-core = { path = "../los-core" }
+los-consensus = { path = "../los-consensus" }
+
+[features]
+mainnet = []

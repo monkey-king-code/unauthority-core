@@ -1,0 +1,190 @@
+syntax = "proto3";
+
+package unauthority;
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// UNAUTHORITY NODE - gRPC SERVICE DEFINITION
+// 8 Core Services for External Integration
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+service LosNode {
+  // 1. Query account balance
+  rpc GetBalance (GetBalanceRequest) returns (GetBalanceResponse);
+  
+  // 2. Get full account details
+  rpc GetAccount (GetAccountRequest) returns (GetAccountResponse);
+  
+  // 3. Get block by hash
+  rpc GetBlock (GetBlockRequest) returns (GetBlockResponse);
+  
+  // 4. Get latest block
+  rpc GetLatestBlock (GetLatestBlockRequest) returns (GetBlockResponse);
+  
+  // 5. Send LOS transaction
+  rpc SendTransaction (SendTransactionRequest) returns (SendTransactionResponse);
+  
+  // 6. Get node info (oracle, supply, network)
+  rpc GetNodeInfo (GetNodeInfoRequest) returns (GetNodeInfoResponse);
+  
+  // 7. Get active validators
+  rpc GetValidators (GetValidatorsRequest) returns (GetValidatorsResponse);
+  
+  // 8. Get current block height
+  rpc GetBlockHeight (GetBlockHeightRequest) returns (GetBlockHeightResponse);
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// MESSAGE DEFINITIONS
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// ────────────────────────────────────────────────────────────────────────────
+// 1. BALANCE QUERY
+// ────────────────────────────────────────────────────────────────────────────
+
+message GetBalanceRequest {
+  string address = 1;  // LOS address (full or short)
+}
+
+message GetBalanceResponse {
+  string address = 1;            // Full LOS address
+  uint64 balance_cil = 2;       // Balance in CIL (truncated to u64, use balance_cil_str for full precision)
+  double balance_los = 3;        // Balance in LOS (human-readable)
+  uint64 block_count = 4;        // Total blocks created by this account
+  string head_block = 5;         // Latest block hash
+  string balance_cil_str = 6;   // Full-precision balance in CIL as string (u128 safe)
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// 2. ACCOUNT DETAILS
+// ────────────────────────────────────────────────────────────────────────────
+
+message GetAccountRequest {
+  string address = 1;
+}
+
+message GetAccountResponse {
+  string address = 1;
+  uint64 balance_cil = 2;
+  double balance_los = 3;
+  uint64 block_count = 4;
+  string head_block = 5;
+  bool is_validator = 6;         // Has minimum 1,000 LOS stake
+  uint64 stake_cil = 7;         // Validator stake if applicable
+  string balance_cil_str = 8;   // Full-precision balance as string (u128 safe)
+  string stake_cil_str = 9;     // Full-precision stake as string (u128 safe)
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// 3. BLOCK QUERY
+// ────────────────────────────────────────────────────────────────────────────
+
+message GetBlockRequest {
+  string block_hash = 1;
+}
+
+message GetBlockResponse {
+  string block_hash = 1;
+  string account = 2;
+  string previous_block = 3;
+  string link = 4;              // Recipient for send, or source for receive
+  string block_type = 5;        // "Send", "Receive", "Change", "Burn"
+  uint64 amount = 6;
+  uint64 balance = 7;
+  string signature = 8;
+  uint64 timestamp = 9;
+  string representative = 10;    // For validator delegation
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// 4. LATEST BLOCK
+// ────────────────────────────────────────────────────────────────────────────
+
+message GetLatestBlockRequest {
+  // Empty - returns global latest block
+}
+
+// Returns GetBlockResponse
+
+// ────────────────────────────────────────────────────────────────────────────
+// 5. SEND TRANSACTION
+// ────────────────────────────────────────────────────────────────────────────
+
+message SendTransactionRequest {
+  string from = 1;
+  string to = 2;
+  uint64 amount_cil = 3;
+  uint64 priority_fee = 4;       // Optional priority tip for validators
+  bytes signature = 5;           // Cryptographic signature
+}
+
+message SendTransactionResponse {
+  bool success = 1;
+  string tx_hash = 2;
+  string message = 3;
+  uint64 estimated_finality_ms = 4;  // ~3000ms for aBFT
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// 6. NODE INFO (Oracle, Supply, Network)
+// ────────────────────────────────────────────────────────────────────────────
+
+message GetNodeInfoRequest {
+  // Empty
+}
+
+message GetNodeInfoResponse {
+  string node_address = 1;
+  uint32 network_id = 2;         // 1 = mainnet, 2 = testnet
+  string chain_name = 3;         // "Unauthority"
+  string version = 4;            // Node version
+  
+  // Supply info
+  uint64 total_supply_cil = 5;  // Fixed: 21,936,236 LOS
+  uint64 remaining_supply_cil = 6;
+  uint64 total_burned_usd = 7;   // Total USD value burned via PoB (in cents)
+  
+  // Oracle prices (from consensus)
+  double eth_price_usd = 8;
+  double btc_price_usd = 9;
+  
+  // Network stats
+  uint32 peer_count = 10;
+  uint64 latest_block_height = 11;
+  bool is_validator = 12;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// 7. VALIDATORS LIST
+// ────────────────────────────────────────────────────────────────────────────
+
+message GetValidatorsRequest {
+  // Empty - returns all active validators
+}
+
+message GetValidatorsResponse {
+  repeated ValidatorInfo validators = 1;
+  uint32 total_count = 2;
+}
+
+message ValidatorInfo {
+  string address = 1;
+  uint64 stake_cil = 2;
+  bool is_active = 3;
+  double voting_power = 4;       // Linear voting: 1 LOS = 1 vote
+  uint64 rewards_earned = 5;     // Total gas fees earned
+  double uptime_percent = 6;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// 8. BLOCK HEIGHT
+// ────────────────────────────────────────────────────────────────────────────
+
+message GetBlockHeightRequest {
+  // Empty
+}
+
+message GetBlockHeightResponse {
+  uint64 height = 1;
+  string latest_block_hash = 2;
+  uint64 timestamp = 3;
+}

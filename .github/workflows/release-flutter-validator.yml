@@ -1,0 +1,417 @@
+name: "Release Flutter Validator (Mainnet)"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Builds LOS Validator Dashboard for macOS, Linux & Windows — creates GitHub Release
+# Triggered on merge to main (validator changes), tags, or manual dispatch
+# ═══════════════════════════════════════════════════════════════════════════════
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'flutter_validator/**'
+      - '.github/workflows/release-flutter-validator.yml'
+    tags:
+      - 'validator-v*-mainnet'
+      - 'validator-v*-mainnet.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version (e.g., 1.0.0-mainnet)'
+        required: true
+        default: '1.0.0-mainnet'
+
+env:
+  FLUTTER_VERSION: '3.38.4'
+
+jobs:
+  # ══════════════════════════════════════════════════════════════════════════════
+  #  macOS (.dmg)
+  # ══════════════════════════════════════════════════════════════════════════════
+  build-macos:
+    name: "🍎 macOS Validator (.dmg)"
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            flutter_validator/native/los_crypto_ffi/target
+          key: macos-validator-rust-${{ hashFiles('flutter_validator/native/los_crypto_ffi/Cargo.lock') }}
+
+      - name: Build Dilithium5 native library
+        working-directory: flutter_validator/native/los_crypto_ffi
+        run: |
+          cargo build --release
+          cargo test --release -- --nocapture
+
+      - name: Install protobuf compiler
+        run: brew install protobuf
+
+      - name: Build los-node binary (mainnet)
+        run: cargo build --release -p los-node --features mainnet
+
+      - name: Flutter pub get
+        working-directory: flutter_validator
+        run: flutter pub get
+
+      - name: Flutter build macOS
+        working-directory: flutter_validator
+        run: flutter build macos --release
+
+      - name: Bundle native library + los-node binary
+        working-directory: flutter_validator
+        run: |
+          APP="build/macos/Build/Products/Release/LOS Validator Node.app"
+          FRAMEWORKS="$APP/Contents/Frameworks"
+          RESOURCES="$APP/Contents/Resources"
+          mkdir -p "$FRAMEWORKS" "$RESOURCES/bin"
+          cp native/los_crypto_ffi/target/release/liblos_crypto_ffi.dylib "$FRAMEWORKS/"
+          install_name_tool -id "@executable_path/../Frameworks/liblos_crypto_ffi.dylib" "$FRAMEWORKS/liblos_crypto_ffi.dylib"
+          # Bundle the los-node binary so the validator can start a local node
+          cp ../target/release/los-node "$RESOURCES/bin/los-node"
+          chmod +x "$RESOURCES/bin/los-node"
+          codesign --force --deep --sign - "$APP"
+
+      - name: Create DMG
+        working-directory: flutter_validator
+        run: |
+          VERSION="${GITHUB_REF_NAME#validator-v}"
+          [ -z "$VERSION" ] && VERSION="${{ github.event.inputs.version }}"
+          if [ "$VERSION" = "$GITHUB_REF_NAME" ]; then VERSION="${{ github.event.inputs.version || '1.0.0-mainnet' }}"; fi
+
+          mkdir -p release/dmg_staging
+          cp -R "build/macos/Build/Products/Release/LOS Validator Node.app" release/dmg_staging/
+          ln -s /Applications release/dmg_staging/Applications
+
+          cat > release/dmg_staging/README.txt << 'EOF'
+          ╔══════════════════════════════════════════════════════════════╗
+          ║         LOS VALIDATOR DASHBOARD - MAINNET RELEASE          ║
+          ║                Unauthority Blockchain                      ║
+          ╚══════════════════════════════════════════════════════════════╝
+
+          INSTALLATION:
+            Drag "LOS Validator Node.app" to the Applications folder.
+
+          FIRST RUN:
+            1. Open the app from Applications
+            2. If blocked: System Settings → Privacy → Open Anyway
+            3. The dashboard auto-configures Tor + Dilithium5 crypto
+          EOF
+
+          hdiutil create \
+            -volname "LOS Validator" \
+            -srcfolder release/dmg_staging \
+            -ov -format UDZO \
+            "release/LOS-Validator-${VERSION}-macos.dmg"
+
+          rm -rf release/dmg_staging
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: validator-macos
+          path: flutter_validator/release/*.dmg
+          if-no-files-found: error
+
+  # ══════════════════════════════════════════════════════════════════════════════
+  #  Linux (.tar.gz)
+  # ══════════════════════════════════════════════════════════════════════════════
+  build-linux:
+    name: "🐧 Linux Validator (.tar.gz)"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang cmake git ninja-build pkg-config \
+            libgtk-3-dev liblzma-dev libstdc++-12-dev \
+            libsecret-1-dev libjsoncpp-dev \
+            protobuf-compiler
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            flutter_validator/native/los_crypto_ffi/target
+          key: linux-validator-rust-${{ hashFiles('flutter_validator/native/los_crypto_ffi/Cargo.lock') }}
+
+      - name: Build Dilithium5 native library
+        working-directory: flutter_validator/native/los_crypto_ffi
+        run: |
+          cargo build --release
+          cargo test --release -- --nocapture
+
+      - name: Build los-node binary (mainnet)
+        run: cargo build --release -p los-node --features mainnet
+
+      - name: Flutter pub get
+        working-directory: flutter_validator
+        run: flutter pub get
+
+      - name: Flutter build Linux
+        working-directory: flutter_validator
+        run: flutter build linux --release
+
+      - name: Bundle native library, los-node binary & package
+        working-directory: flutter_validator
+        run: |
+          VERSION="${GITHUB_REF_NAME#validator-v}"
+          [ -z "$VERSION" ] && VERSION="${{ github.event.inputs.version }}"
+          if [ "$VERSION" = "$GITHUB_REF_NAME" ]; then VERSION="${{ github.event.inputs.version || '1.0.0-mainnet' }}"; fi
+
+          BUNDLE="build/linux/x64/release/bundle"
+
+          cp native/los_crypto_ffi/target/release/liblos_crypto_ffi.so "$BUNDLE/lib/"
+          # Bundle the los-node binary so the validator can start a local node
+          cp ../target/release/los-node "$BUNDLE/los-node"
+          chmod +x "$BUNDLE/los-node"
+
+          cat > "$BUNDLE/run.sh" << 'LAUNCHER'
+          #!/bin/bash
+          SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          export LD_LIBRARY_PATH="${SCRIPT_DIR}/lib:${LD_LIBRARY_PATH}"
+          exec "${SCRIPT_DIR}/flutter_validator" "$@"
+          LAUNCHER
+          chmod +x "$BUNDLE/run.sh"
+
+          cat > "$BUNDLE/README.txt" << 'EOF'
+          ═══════════════════════════════════════════════════════════════
+            LOS VALIDATOR DASHBOARD - MAINNET RELEASE (Linux)
+            Unauthority Blockchain
+          ═══════════════════════════════════════════════════════════════
+
+          INSTALLATION:
+            1. Extract this archive
+            2. Run: ./run.sh
+
+          The validator dashboard connects to your LOS node.
+          EOF
+
+          # Package inside LOS-Validator/ subfolder to prevent conflicts with wallet
+          mkdir -p release
+          cd build/linux/x64/release
+          mv bundle LOS-Validator
+          tar czf "../../../../release/LOS-Validator-${VERSION}-linux-x64.tar.gz" LOS-Validator/
+          cd ../../../../
+
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: validator-linux
+          path: flutter_validator/release/*.tar.gz
+          if-no-files-found: error
+
+  # ══════════════════════════════════════════════════════════════════════════════
+  #  Windows (.zip)
+  # ══════════════════════════════════════════════════════════════════════════════
+  build-windows:
+    name: "🪟 Windows Validator (.zip)"
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            flutter_validator/native/los_crypto_ffi/target
+          key: windows-validator-rust-${{ hashFiles('flutter_validator/native/los_crypto_ffi/Cargo.lock') }}
+
+      - name: Build Dilithium5 native library
+        working-directory: flutter_validator/native/los_crypto_ffi
+        run: |
+          cargo build --release
+          cargo test --release -- --nocapture
+
+      - name: Install protobuf compiler
+        run: choco install protoc -y
+
+      - name: Build los-node binary (mainnet)
+        run: cargo build --release -p los-node --features mainnet
+
+      - name: Flutter pub get
+        working-directory: flutter_validator
+        run: flutter pub get
+
+      - name: Flutter build Windows
+        working-directory: flutter_validator
+        run: flutter build windows --release
+
+      - name: Bundle native library, los-node binary & package
+        working-directory: flutter_validator
+        shell: pwsh
+        run: |
+          $version = "$env:GITHUB_REF_NAME" -replace '^validator-v',''
+          if (-not $version -or $version -eq $env:GITHUB_REF_NAME) { $version = "${{ github.event.inputs.version || '1.0.0-mainnet' }}" }
+
+          $bundle = "build\windows\x64\runner\Release"
+
+          Copy-Item "native\los_crypto_ffi\target\release\los_crypto_ffi.dll" "$bundle\"
+          # Bundle the los-node binary so the validator can start a local node
+          Copy-Item "..\target\release\los-node.exe" "$bundle\"
+
+          @"
+          ═══════════════════════════════════════════════════════════════
+            LOS VALIDATOR DASHBOARD - MAINNET RELEASE (Windows)
+            Unauthority Blockchain
+          ═══════════════════════════════════════════════════════════════
+
+          INSTALLATION:
+            1. Extract this archive to its own folder
+            2. Run: flutter_validator.exe
+
+          IMPORTANT: Do NOT extract into the same folder as LOS Wallet.
+          Each app must be in its own directory.
+          "@ | Out-File -FilePath "$bundle\README.txt" -Encoding utf8
+
+          # Package inside LOS-Validator/ subfolder to prevent data/ conflicts with wallet
+          $staging = "release\staging\LOS-Validator"
+          New-Item -ItemType Directory -Force -Path $staging | Out-Null
+          Copy-Item -Path "$bundle\*" -Destination $staging -Recurse
+          New-Item -ItemType Directory -Force -Path release | Out-Null
+          Compress-Archive -Path "release\staging\LOS-Validator" -DestinationPath "release\LOS-Validator-${version}-windows-x64.zip" -Force
+          Remove-Item -Recurse -Force "release\staging"
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: validator-windows
+          path: flutter_validator/release/*.zip
+          if-no-files-found: error
+
+  # ══════════════════════════════════════════════════════════════════════════════
+  #  Create GitHub Release
+  # ══════════════════════════════════════════════════════════════════════════════
+  release:
+    name: "📦 Create Validator Release"
+    needs: [build-macos, build-linux, build-windows]
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get version info
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+            TAG="validator-v${VERSION}"
+          elif [[ "${GITHUB_REF_NAME}" == validator-v* ]]; then
+            TAG="${GITHUB_REF_NAME}"
+            VERSION="${TAG#validator-v}"
+          else
+            # Push to main (no tag) — use default version
+            VERSION="1.0.0-mainnet"
+            TAG="validator-v${VERSION}"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION, Tag: $TAG"
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: List artifacts
+        run: find artifacts -type f | sort
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: "LOS Validator ${{ steps.version.outputs.version }} (Mainnet)"
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          body: |
+            # 🖥️ LOS Validator Dashboard — Mainnet Release `${{ steps.version.outputs.version }}`
+
+            **Post-Quantum Secure** validator monitoring dashboard for the Unauthority blockchain mainnet.
+
+            ## 📥 Downloads
+
+            | Platform | File | Install |
+            |----------|------|---------|
+            | 🍎 **macOS** | `LOS-Validator-*-macos.dmg` | Open DMG → drag to Applications |
+            | 🐧 **Linux** | `LOS-Validator-*-linux-x64.tar.gz` | Extract → `./run.sh` |
+            | 🪟 **Windows** | `LOS-Validator-*-windows-x64.zip` | Extract → `flutter_validator.exe` |
+
+            ## ✅ What's Included
+
+            - �️ **Bundled los-node** — Full validator node binary included, no separate build needed
+            - 🔐 **CRYSTALS-Dilithium5** — Post-quantum digital signatures
+            - 🧅 **Automatic Tor** — Zero-config .onion connectivity
+            - 📊 **Live Dashboard** — Validator stats, peers, blocks, uptime
+            - 🛡️ **Slashing Monitor** — Track validator penalties
+            - 🔑 **Key Management** — Generate/import validator keys with BIP39 seed phrases
+            - ⚡ **aBFT Consensus** — Real-time consensus status and finality tracking
+
+            ## 🚀 First Run
+
+            1. Install & open the validator dashboard
+            2. Import existing keys or generate new ones
+            3. Click **START NODE** — the bundled los-node starts automatically
+            4. Dashboard connects via Tor to the mainnet peers
+
+            ## ⚠️ Notes
+
+            - This is a **mainnet** release — this is a live production release
+            - The los-node binary is bundled — no Rust toolchain or compilation needed
+            - Minimum 1,000 LOS stake for validator participation
+
+          files: |
+            artifacts/validator-macos/*.dmg
+            artifacts/validator-linux/*.tar.gz
+            artifacts/validator-windows/*.zip
+          overwrite_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

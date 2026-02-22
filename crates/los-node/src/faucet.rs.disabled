@@ -1,0 +1,402 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+//! # Testnet Faucet
+//!
+//! Rate-limited faucet for distributing test UAT tokens.
+//!
+//! Features:
+//! - IP-based rate limiting (1 request per hour)
+//! - Address-based rate limiting (1 request per 24 hours)
+//! - Configurable drip amount
+//! - Admin controls for emergency stop
+//! - Automatic refill from treasury
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+/// Configuration for the faucet
+#[derive(Debug, Clone)]
+pub struct FaucetConfig {
+    /// Amount to send per request (in VOI)
+    pub drip_amount: u64,
+    /// Cooldown period per IP (seconds)
+    pub ip_cooldown: u64,
+    /// Cooldown period per address (seconds)
+    pub address_cooldown: u64,
+    /// Maximum requests per hour globally
+    pub max_requests_per_hour: usize,
+    /// Minimum balance to keep in faucet
+    pub min_balance: u64,
+    /// Treasury address for refills
+    pub treasury_address: String,
+    /// Faucet wallet address
+    pub faucet_address: String,
+    /// Enable/disable faucet
+    pub enabled: bool,
+}
+
+impl Default for FaucetConfig {
+    fn default() -> Self {
+        Self {
+            drip_amount: 10_000_000_000, // 100 UAT
+            ip_cooldown: 3600,             // 1 hour
+            address_cooldown: 86400,       // 24 hours
+            max_requests_per_hour: 100,
+            min_balance: 100_000_000_000,  // 1000 UAT minimum
+            treasury_address: String::new(),
+            faucet_address: String::new(),
+            enabled: true,
+        }
+    }
+}
+
+/// Rate limiting tracker
+#[derive(Debug)]
+struct RateLimiter {
+    ip_requests: HashMap<String, u64>,
+    address_requests: HashMap<String, u64>,
+    hourly_counter: Vec<u64>,
+}
+
+impl RateLimiter {
+    fn new() -> Self {
+        Self {
+            ip_requests: HashMap::new(),
+            address_requests: HashMap::new(),
+            hourly_counter: Vec::new(),
+        }
+    }
+
+    fn can_request_ip(&mut self, ip: &str, cooldown: u64) -> Result<(), String> {
+        let now = current_timestamp();
+        
+        if let Some(&last_request) = self.ip_requests.get(ip) {
+            let elapsed = now - last_request;
+            if elapsed < cooldown {
+                let remaining = cooldown - elapsed;
+                return Err(format!(
+                    "IP rate limit exceeded. Try again in {} seconds",
+                    remaining
+                ));
+            }
+        }
+        
+        self.ip_requests.insert(ip.to_string(), now);
+        Ok(())
+    }
+
+    fn can_request_address(&mut self, address: &str, cooldown: u64) -> Result<(), String> {
+        let now = current_timestamp();
+        
+        if let Some(&last_request) = self.address_requests.get(address) {
+            let elapsed = now - last_request;
+            if elapsed < cooldown {
+                let remaining = cooldown - elapsed;
+                return Err(format!(
+                    "Address rate limit exceeded. Try again in {} hours",
+                    remaining / 3600
+                ));
+            }
+        }
+        
+        self.address_requests.insert(address.to_string(), now);
+        Ok(())
+    }
+
+    fn check_hourly_limit(&mut self, max_requests: usize) -> Result<(), String> {
+        let now = current_timestamp();
+        let one_hour_ago = now.saturating_sub(3600);
+        
+        // Clean old entries
+        self.hourly_counter.retain(|&timestamp| timestamp > one_hour_ago);
+        
+        if self.hourly_counter.len() >= max_requests {
+            return Err("Faucet is temporarily at capacity. Try again later.".to_string());
+        }
+        
+        self.hourly_counter.push(now);
+        Ok(())
+    }
+
+    fn cleanup_old_entries(&mut self) {
+        let now = current_timestamp();
+        let cleanup_threshold = now.saturating_sub(86400 * 7); // 7 days
+        
+        self.ip_requests.retain(|_, &mut timestamp| timestamp > cleanup_threshold);
+        self.address_requests.retain(|_, &mut timestamp| timestamp > cleanup_threshold);
+    }
+}
+
+/// Faucet request
+#[derive(Debug, serde::Deserialize)]
+pub struct FaucetRequest {
+    pub address: String,
+    pub captcha_token: Option<String>,
+}
+
+/// Faucet response
+#[derive(Debug, serde::Serialize)]
+pub struct FaucetResponse {
+    pub success: bool,
+    pub message: String,
+    pub tx_hash: Option<String>,
+    pub amount: Option<u64>,
+    pub cooldown_remaining: Option<u64>,
+}
+
+/// Main faucet service
+pub struct Faucet {
+    config: FaucetConfig,
+    rate_limiter: Arc<Mutex<RateLimiter>>,
+    stats: Arc<Mutex<FaucetStats>>,
+}
+
+#[derive(Debug, Default)]
+struct FaucetStats {
+    total_requests: u64,
+    successful_drips: u64,
+    total_distributed: u64,
+    rejected_requests: u64,
+}
+
+impl Faucet {
+    pub fn new(config: FaucetConfig) -> Self {
+        Self {
+            config,
+            rate_limiter: Arc::new(Mutex::new(RateLimiter::new())),
+            stats: Arc::new(Mutex::new(FaucetStats::default())),
+        }
+    }
+
+    /// Process faucet request
+    pub async fn request_tokens(
+        &self,
+        request: FaucetRequest,
+        ip_address: String,
+    ) -> FaucetResponse {
+        // Update stats
+        {
+            let mut stats = self.stats.lock().unwrap();
+            stats.total_requests += 1;
+        }
+
+        // Check if faucet is enabled
+        if !self.config.enabled {
+            return FaucetResponse {
+                success: false,
+                message: "Faucet is currently disabled".to_string(),
+                tx_hash: None,
+                amount: None,
+                cooldown_remaining: None,
+            };
+        }
+
+        // Validate address format
+        if !request.address.starts_with("UAT") || request.address.len() < 20 {
+            return self.error_response("Invalid UAT address format");
+        }
+
+        // Verify CAPTCHA (if enabled)
+        if let Some(token) = request.captcha_token {
+            if !self.verify_captcha(&token).await {
+                return self.error_response("CAPTCHA verification failed");
+            }
+        }
+
+        // Rate limiting checks
+        let mut limiter = self.rate_limiter.lock().unwrap();
+        
+        if let Err(msg) = limiter.check_hourly_limit(self.config.max_requests_per_hour) {
+            return self.error_response(&msg);
+        }
+        
+        if let Err(msg) = limiter.can_request_ip(&ip_address, self.config.ip_cooldown) {
+            return self.error_response(&msg);
+        }
+        
+        if let Err(msg) = limiter.can_request_address(&request.address, self.config.address_cooldown) {
+            return self.error_response(&msg);
+        }
+
+        // Cleanup old entries periodically
+        limiter.cleanup_old_entries();
+        drop(limiter);
+
+        // Check faucet balance
+        let faucet_balance = self.get_faucet_balance().await;
+        if faucet_balance < self.config.drip_amount {
+            return self.error_response("Faucet is temporarily out of funds. Please notify administrator.");
+        }
+
+        if faucet_balance < self.config.min_balance {
+            // Trigger refill from treasury
+            let _ = self.request_refill().await;
+        }
+
+        // Send tokens
+        match self.send_tokens(&request.address, self.config.drip_amount).await {
+            Ok(tx_hash) => {
+                // Update stats
+                let mut stats = self.stats.lock().unwrap();
+                stats.successful_drips += 1;
+                stats.total_distributed += self.config.drip_amount;
+
+                FaucetResponse {
+                    success: true,
+                    message: format!(
+                        "Successfully sent {} UAT to {}",
+                        self.config.drip_amount / 100_000_000_000,
+                        request.address
+                    ),
+                    tx_hash: Some(tx_hash),
+                    amount: Some(self.config.drip_amount),
+                    cooldown_remaining: Some(self.config.address_cooldown),
+                }
+            }
+            Err(e) => {
+                let mut stats = self.stats.lock().unwrap();
+                stats.rejected_requests += 1;
+                
+                self.error_response(&format!("Transaction failed: {}", e))
+            }
+        }
+    }
+
+    /// Get faucet statistics
+    pub fn get_stats(&self) -> serde_json::Value {
+        let stats = self.stats.lock().unwrap();
+        serde_json::json!({
+            "total_requests": stats.total_requests,
+            "successful_drips": stats.successful_drips,
+            "rejected_requests": stats.rejected_requests,
+            "total_distributed_voi": stats.total_distributed,
+            "total_distributed_los": stats.total_distributed / 100_000_000_000,
+            "drip_amount_uat": self.config.drip_amount / 100_000_000_000,
+            "ip_cooldown_seconds": self.config.ip_cooldown,
+            "address_cooldown_hours": self.config.address_cooldown / 3600,
+            "enabled": self.config.enabled,
+        })
+    }
+
+    /// Admin: Enable/disable faucet
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.config.enabled = enabled;
+    }
+
+    /// Admin: Update drip amount
+    pub fn set_drip_amount(&mut self, amount: u64) {
+        self.config.drip_amount = amount;
+    }
+
+    // Private helper methods
+    
+    async fn get_faucet_balance(&self) -> u64 {
+        // In production, query actual blockchain balance
+        // For now, return mock value
+        1_000_000_000_000 // 10,000 UAT
+    }
+
+    async fn send_tokens(&self, _to_address: &str, _amount: u64) -> Result<String, String> {
+        // In production, create and broadcast actual transaction
+        // This would integrate with the node's transaction builder
+        
+        // Mock implementation
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        
+        // Simulate occasional failures (disabled for tests)
+        #[cfg(not(test))]
+        if rand::random::<f32>() < 0.05 {
+            return Err("Network error".to_string());
+        }
+        
+        Ok(format!("0xfaucet_tx_{}", current_timestamp()))
+    }
+
+    async fn verify_captcha(&self, _token: &str) -> bool {
+        // In production, verify with reCAPTCHA or hCaptcha
+        // For testnet, we might skip this
+        true
+    }
+
+    async fn request_refill(&self) -> Result<(), String> {
+        // In production, create transaction from treasury to faucet
+        // This requires treasury multisig or admin key
+        Ok(())
+    }
+
+    fn error_response(&self, message: &str) -> FaucetResponse {
+        let mut stats = self.stats.lock().unwrap();
+        stats.rejected_requests += 1;
+        
+        FaucetResponse {
+            success: false,
+            message: message.to_string(),
+            tx_hash: None,
+            amount: None,
+            cooldown_remaining: None,
+        }
+    }
+}
+
+// Utility functions
+
+fn current_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_rate_limiter_ip() {
+        let mut limiter = RateLimiter::new();
+        
+        // First request should succeed
+        assert!(limiter.can_request_ip("192.168.1.1", 3600).is_ok());
+        
+        // Second request immediately should fail
+        assert!(limiter.can_request_ip("192.168.1.1", 3600).is_err());
+        
+        // Different IP should succeed
+        assert!(limiter.can_request_ip("192.168.1.2", 3600).is_ok());
+    }
+
+    #[test]
+    fn test_rate_limiter_address() {
+        let mut limiter = RateLimiter::new();
+        
+        assert!(limiter.can_request_address("UAT1abc...", 86400).is_ok());
+        assert!(limiter.can_request_address("UAT1abc...", 86400).is_err());
+        assert!(limiter.can_request_address("UAT2def...", 86400).is_ok());
+    }
+
+    #[test]
+    fn test_hourly_limit() {
+        let mut limiter = RateLimiter::new();
+        
+        for i in 0..10 {
+            assert!(limiter.check_hourly_limit(10).is_ok(), "Request {} failed", i);
+        }
+        
+        // 11th request should fail
+        assert!(limiter.check_hourly_limit(10).is_err());
+    }
+
+    #[tokio::test]
+    async fn test_faucet_request() {
+        let config = FaucetConfig::default();
+        let faucet = Faucet::new(config);
+        
+        let request = FaucetRequest {
+            address: "UAT1test123456789012345678901234567890".to_string(), // Valid length (40+ chars)
+            captcha_token: None,
+        };
+        
+        let response = faucet.request_tokens(request, "192.168.1.1".to_string()).await;
+        assert!(response.success, "Expected success but got: {}", response.message);
+    }
+}

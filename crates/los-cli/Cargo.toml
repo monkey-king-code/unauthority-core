@@ -1,0 +1,19 @@
+[package]
+name = "los-cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive", "env"] }
+tokio = { version = "1.0", features = ["full"] }
+reqwest = { version = "0.11", features = ["json", "socks"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+hex = "0.4"
+base64 = "0.22"
+blake3 = "1.5"
+los-core = { path = "../los-core" }
+los-crypto = { path = "../los-crypto" }
+rpassword = "7.3"
+colored = "2.1"
+dirs = "5.0"

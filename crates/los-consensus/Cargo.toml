@@ -1,0 +1,17 @@
+[package]
+name = "los-consensus"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+tokio = { version = "1.0", features = ["full"] }
+sha3 = "0.10"
+sled = "0.34.7"
+bincode = "1.3"
+
+[features]
+mainnet = []
+
+[dev-dependencies]
+tempfile = "3.8"

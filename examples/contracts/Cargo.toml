@@ -1,0 +1,43 @@
+[package]
+name = "los-contract-examples"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# los-sdk is used by WASM-targeted contract examples (simple_storage)
+los-sdk = { path = "../../crates/los-sdk", optional = true }
+
+[features]
+default = []
+# Enable los-sdk for WASM-targeted contracts
+sdk = ["los-sdk"]
+
+[[bin]]
+name = "hello_world"
+path = "hello_world.rs"
+
+[[bin]]
+name = "token"
+path = "token.rs"
+
+[[bin]]
+name = "oracle_price_feed"
+path = "oracle_price_feed.rs"
+
+[[bin]]
+name = "dex_amm"
+path = "dex_amm.rs"
+
+[[bin]]
+name = "simple_storage"
+path = "simple_storage.rs"
+required-features = ["sdk"]
+
+[profile.release]
+opt-level = "z"      # Optimize for size
+lto = true           # Link-time optimization
+codegen-units = 1    # Better optimization
+panic = "abort"      # Smaller binary
+strip = true         # Remove symbols

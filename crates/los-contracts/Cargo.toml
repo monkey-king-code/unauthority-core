@@ -1,0 +1,24 @@
+[package]
+name = "los-contracts"
+version = "0.1.0"
+edition = "2021"
+description = "Production smart contracts for Unauthority (LOS) blockchain"
+
+[dependencies]
+# los-sdk provides host function wrappers for WASM contracts
+los-sdk = { path = "../los-sdk" }
+
+[[bin]]
+name = "usp01_token"
+path = "src/usp01_token.rs"
+
+[[bin]]
+name = "dex_amm"
+path = "src/dex_amm.rs"
+
+[profile.release]
+opt-level = "z"        # Optimize for size (WASM)
+lto = true             # Link-time optimization
+codegen-units = 1      # Better optimization
+panic = "abort"        # Smaller binary
+strip = true           # Remove symbols

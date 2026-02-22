@@ -1,0 +1,17 @@
+[package]
+name = "los-sdk"
+version = "0.1.0"
+edition = "2021"
+description = "Smart contract SDK for the Unauthority (LOS) blockchain"
+license = "AGPL-3.0-only"
+
+[features]
+default = []
+
+[dependencies]
+# No dependencies — the SDK is `no_std` with `alloc` only.
+# All functionality comes from host function imports provided by UVM.
+
+[lib]
+name = "los_sdk"
+path = "src/lib.rs"

@@ -1,0 +1,60 @@
+# Build artifacts
+target/
+**/*.rs.bk
+*.pdb
+
+# Frontend
+frontend-*/node_modules/
+frontend-*/dist/
+frontend-*/.cache/
+
+# Data directories
+node_data/
+node_a_data/
+node_b_data/
+node_c_data/
+los_database/
+*/los_database/
+
+# Documentation
+docs/internal/
+*.md
+!README.md
+
+# Git
+.git/
+.gitignore
+.github/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+logs/
+
+# Environment
+.env
+.env.*
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Wallets (security)
+wallet.json
+*.wallet
+
+# Scripts (not needed in container)
+scripts/
+*.sh
+!install.sh
+
+# Tests
+tests/
+flycheck*/

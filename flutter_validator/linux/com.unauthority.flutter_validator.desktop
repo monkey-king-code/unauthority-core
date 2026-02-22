@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=LOS Validator
+Comment=Unauthority (LOS) — Validator Node Dashboard
+Icon=com.unauthority.flutter_validator
+Exec=flutter_validator
+Terminal=false
+Categories=System;Network;BlockChain;
+Keywords=validator;blockchain;node;los;unauthority;
+StartupWMClass=flutter_validator
