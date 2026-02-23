@@ -296,7 +296,7 @@ voting_power = staked_amount_cil  (if >= MIN_STAKE_CIL, else 0)
 
 | Scenario | Stake | Voting Power |
 |---|---|---|
-| 1 whale | 10,000 LOS | 10,000 |
+| 1 large holder | 10,000 LOS | 10,000 |
 | 10 small validators | 1,000 LOS each | 10 × 1,000 = 10,000 |
 
 **Result:** Splitting stake across multiple identities yields the same total power. This is **Sybil-neutral** — no advantage to splitting or concentrating.

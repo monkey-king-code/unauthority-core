@@ -34,7 +34,7 @@ This project follows a simple principle: **be respectful and constructive**. All
 
 | Tool | Version | Purpose |
 |---|---|---|
-| **Rust** | 1.75+ (2024 edition) | Backend, node, crypto |
+| **Rust** | 1.75+ (2021 edition) | Backend, node, crypto |
 | **Flutter** | 3.27+ | Wallet and validator dashboard |
 | **Tor** | Latest stable | Network transport |
 | **Git** | Latest stable | Version control |
@@ -110,7 +110,7 @@ cd ..
 
 ### Rust
 
-- **Edition:** 2024
+- **Edition:** 2021
 - **Error handling:** Use `Result<T, E>` and `Option<T>` — no `unwrap()` in production code
 - **Panics:** Zero `panic!()`, `todo!()`, `unimplemented!()` in mainnet-reachable paths
 - **Floating-point:** Absolutely no `f32`/`f64` in consensus or financial logic — use `u128` integer arithmetic

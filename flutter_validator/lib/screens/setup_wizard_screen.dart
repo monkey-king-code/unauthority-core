@@ -316,7 +316,7 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
 
       await NetworkConfig.load();
       const networkMode =
-          String.fromEnvironment('NETWORK', defaultValue: 'testnet');
+          String.fromEnvironment('NETWORK', defaultValue: 'mainnet');
       final nodes = networkMode == 'mainnet'
           ? NetworkConfig.mainnetNodes
           : NetworkConfig.testnetNodes;

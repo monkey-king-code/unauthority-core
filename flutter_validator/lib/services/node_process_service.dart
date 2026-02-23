@@ -375,7 +375,7 @@ class NodeProcessService extends ChangeNotifier {
       //   'consensus'  = Level 2 (real aBFT, real signatures — default)
       //   'production' = Level 3 (identical to mainnet — full security)
       const isMainnetBuild =
-          String.fromEnvironment('NETWORK', defaultValue: 'testnet') ==
+          String.fromEnvironment('NETWORK', defaultValue: 'mainnet') ==
               'mainnet';
       final env = <String, String>{
         if (!isMainnetBuild) 'LOS_TESTNET_LEVEL': testnetLevel,

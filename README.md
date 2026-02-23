@@ -3,7 +3,7 @@
 **A 100% Immutable, Permissionless, and Decentralized Blockchain.**
 
 [![CI](https://github.com/monkey-king-code/unauthority-core/actions/workflows/ci.yml/badge.svg)](https://github.com/monkey-king-code/unauthority-core/actions)
-[![Rust](https://img.shields.io/badge/rust-2024--edition-orange)]()
+[![Rust](https://img.shields.io/badge/rust-2021--edition-orange)]()
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
 [![Version](https://img.shields.io/badge/version-2.0.0-blue)]()
 

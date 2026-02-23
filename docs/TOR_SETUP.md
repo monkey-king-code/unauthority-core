@@ -12,8 +12,8 @@ Complete guide to configuring Tor hidden services for Unauthority validators and
 4. [Single Validator Setup](#single-validator-setup)
 5. [Multi-Validator Setup (Same Host)](#multi-validator-setup-same-host)
 6. [Verify Hidden Service](#verify-hidden-service)
-7. [Auto-Bootstrap (v1.0.9+)](#auto-bootstrap-v109)
-8. [Automatic Hidden Service Generation (v1.0.9+)](#automatic-hidden-service-generation-v109)
+7. [Auto-Bootstrap (v2.0.0+)](#auto-bootstrap-v200)
+8. [Automatic Hidden Service Generation (v2.0.0+)](#automatic-hidden-service-generation-v200)
 9. [Flutter App Tor Connectivity](#flutter-app-tor-connectivity)
 10. [Firewall Configuration](#firewall-configuration)
 11. [Performance Tuning](#performance-tuning)
@@ -252,9 +252,9 @@ curl http://127.0.0.1:3030/health
 
 ---
 
-## Auto-Bootstrap (v1.0.9+)
+## Auto-Bootstrap (v2.0.0+)
 
-As of v1.0.9, `los-node` automatically bootstraps peer connections:
+Since v2.0.0, `los-node` automatically bootstraps peer connections:
 
 ### How It Works
 
@@ -294,9 +294,9 @@ export LOS_GENESIS_PATH="/path/to/custom/genesis_config.json"
 
 ---
 
-## Automatic Hidden Service Generation (v1.0.9+)
+## Automatic Hidden Service Generation (v2.0.0+)
 
-As of v1.0.9, `los-node` can **automatically generate** a unique Tor Hidden Service (`.onion` address) on startup — no manual `torrc` editing required.
+Since v2.0.0, `los-node` can **automatically generate** a unique Tor Hidden Service (`.onion` address) on startup — no manual `torrc` editing required.
 
 ### Prerequisites
 

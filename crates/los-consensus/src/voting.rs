@@ -314,9 +314,9 @@ impl VotingSystem {
         (votes_for, percentage_bps, consensus_reached)
     }
 
-    /// Compare voting power distributions (for testing anti-whale effectiveness)
+    /// Compare voting power concentration between two stake distributions.
     /// Returns basis points (u32) instead of f64 ratios.
-    /// Returns (whale_concentration_bps, distributed_concentration_bps, improvement_bps)
+    /// Returns (concentrated_bps, distributed_bps, improvement_bps)
     pub fn compare_scenarios(
         whale_scenario: &[(String, u128)],
         distributed_scenario: &[(String, u128)],

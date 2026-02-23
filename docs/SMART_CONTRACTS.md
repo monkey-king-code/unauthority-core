@@ -45,7 +45,7 @@ Unauthority smart contracts are written in Rust, compiled to WebAssembly (`wasm3
 ## Prerequisites
 
 ```bash
-# 1. Rust toolchain (stable, 2024 edition)
+# 1. Rust toolchain (stable, 2021 edition)
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 # 2. WASM target
