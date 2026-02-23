@@ -1043,10 +1043,7 @@ async fn test_linear_voting_power() {
 
     // 2. Below minimum stake (1 LOS) → zero power
     let below_min = calculate_voting_power(CIL_PER_LOS / 2); // 0.5 LOS
-    assert_eq!(
-        below_min, 0,
-        "Below 1 LOS stake must have 0 voting power"
-    );
+    assert_eq!(below_min, 0, "Below 1 LOS stake must have 0 voting power");
     println!("  ✅ Sub-minimum stake (0.5 LOS): power = 0");
 
     println!("\n  📊 Linear voting: verified");
