@@ -483,11 +483,11 @@ class DilithiumService {
     }
   }
 
-  /// Mine Proof-of-Work using native Keccak-256 (100-1000x faster than Dart).
+  /// Mine Proof-of-Work using native SHA3-256 (NIST FIPS 202, 100-1000x faster than Dart).
   ///
   /// [buffer] is the pre-built signing_hash input with a placeholder 8-byte
   /// work field at [workOffset]. This function iterates nonces in that field
-  /// until it finds one where Keccak-256(buffer) has [difficultyBits] leading
+  /// until it finds one where SHA3-256(buffer) has [difficultyBits] leading
   /// zero bits.
   ///
   /// Returns `{'work': nonce, 'hash': hexHash}` on success, null on failure.

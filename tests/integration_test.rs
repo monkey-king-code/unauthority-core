@@ -4,8 +4,8 @@
 //
 // Test Scenarios:
 // 1. Three-Validator Network Consensus
-// 2. Proof-of-Burn Distribution Flow
-// 3. Byzantine Fault Tolerance (Malicious Oracle)
+// 2. PoW Mining Distribution Flow
+// 3. Byzantine Fault Tolerance (Price Outlier Rejection)
 // 4. Load Testing (1000 TPS)
 // 5. Database Persistence & Recovery
 //
@@ -147,51 +147,40 @@ async fn test_three_validator_consensus() {
 }
 
 // ========================================
-// TEST 2: PROOF-OF-BURN DISTRIBUTION FLOW
+// TEST 2: POW MINING DISTRIBUTION FLOW
 // ========================================
 #[tokio::test]
-async fn test_proof_of_burn_distribution() {
-    println!("\n🧪 TEST 2: Proof-of-Burn Distribution Flow");
+async fn test_pow_mining_distribution() {
+    println!("\nð§ª TEST 2: PoW Mining Distribution Flow");
     println!("============================================\n");
 
-    let total_supply = 21_936_236 * 100_000_000_000u128; // 10^11 CIL per LOS
-    let dev_allocation = 777_823 * 100_000_000_000u128; // ~3.5%: 773,823 treasury + 4,000 bootstrap
-    let public_supply = total_supply - dev_allocation;
-    let mut remaining_public = public_supply;
-    let total_burned_usd = 0.0_f64;
+    let total_supply: u128 = 21_936_236 * 100_000_000_000u128;
+    let dev_allocation: u128 = 777_823 * 100_000_000_000u128;
+    let public_supply: u128 = total_supply - dev_allocation;
+    let mut remaining_public: u128 = public_supply;
 
-    println!("📦 Initial State:");
-    println!("  - Total Supply: {} LOS", total_supply / 100000000000);
-    println!("  - Public Supply: {} LOS", public_supply / 100000000000);
-    println!("  - Remaining: {} LOS\n", remaining_public / 100000000000);
+    println!("ð¦ Initial State:");
+    println!("  - Total Supply: {} LOS", total_supply / 100_000_000_000);
+    println!("  - Public Supply: {} LOS", public_supply / 100_000_000_000);
+    println!("  - Remaining: {} LOS\n", remaining_public / 100_000_000_000);
 
-    let btc_price = 90000.0;
-    let _eth_price = 3500.0; // Reserved for multi-asset burn
+    let base_reward: u128 = 100 * 100_000_000_000u128;
+    let epochs_to_test = [1u64, 100, 1000, 8760];
+    for epoch in &epochs_to_test {
+        let halvings = epoch / 8760;
+        let reward = base_reward >> halvings;
+        if reward > 0 && remaining_public >= reward {
+            remaining_public -= reward;
+            println!("â Epoch {}: reward = {} LOS, remaining = {} LOS",
+                epoch, reward / 100_000_000_000, remaining_public / 100_000_000_000);
+        }
+    }
 
-    // Test Case 1: User burns 0.1 BTC
-    let btc_burned = 0.1;
-    let usd_burned = btc_burned * btc_price;
-    let scarcity = 1.0 + (total_burned_usd / (total_supply as f64 / 100000000000.0));
-    let base_price = 1.0;
-    let current_price = base_price * scarcity;
-    let los_received = ((usd_burned / current_price) * 100000000000.0) as u128;
-
-    println!("🔥 Burn Transaction #1:");
-    println!("  - Asset: BTC, Amount: {} BTC", btc_burned);
-    println!("  - USD Value: ${:.2}", usd_burned);
-    println!("  - LOS Received: {} LOS", los_received / 100000000000);
-
-    remaining_public -= los_received;
-    let _total_burned_usd = total_burned_usd + usd_burned;
-
-    println!("  - Remaining: {} LOS\n", remaining_public / 100000000000);
-
-    // Verify supply constraints
-    assert!(remaining_public > 0, "Public supply exhausted!");
+    assert!(remaining_public > 0, "Public supply exhausted too soon!");
     assert!(remaining_public < public_supply, "Supply didn't decrease!");
-    assert!(los_received > 0, "User didn't receive LOS!");
+    assert!(base_reward == 100 * 100_000_000_000u128, "Reward must be 100 LOS");
 
-    println!("✅ TEST PASSED: PoB distribution working correctly\n");
+    println!("\nâ TEST PASSED: PoW mining distribution working correctly\n");
 }
 
 // ========================================
@@ -199,46 +188,55 @@ async fn test_proof_of_burn_distribution() {
 // ========================================
 #[tokio::test]
 async fn test_byzantine_fault_tolerance() {
-    println!("\n🧪 TEST 3: Byzantine Fault Tolerance");
-    println!("======================================\n");
+    println!("\nð§ª TEST 3: Byzantine Fault Tolerance (Price Outlier Rejection)");
+    println!("================================================================\n");
 
-    let oracle_prices = vec![
-        ("Validator 0 (Honest)", 90000.0),
-        ("Validator 1 (Honest)", 90100.0),
-        ("Validator 2 (MALICIOUS)", 9000000.0),
+    // All prices in micro-USD (u128), NO f64
+    let price_reports: Vec<(&str, u128)> = vec![
+        ("Validator 0 (Honest)", 90_000_000_000),
+        ("Validator 1 (Honest)", 90_100_000_000),
+        ("Validator 2 (MALICIOUS)", 9_000_000_000_000),
     ];
 
-    println!("📡 Oracle Price Reports:");
-    for (validator, price) in &oracle_prices {
-        if price > &900000.0 {
-            println!("  - {}: ${:.2} ⚠️  OUTLIER", validator, price);
+    println!("ð¡ Price Reports (micro-USD):");
+    for (validator, price) in &price_reports {
+        if *price > 900_000_000_000 {
+            println!("  - {}: {} â ï¸  OUTLIER", validator, price);
         } else {
-            println!("  - {}: ${:.2} ✅", validator, price);
+            println!("  - {}: {} â", validator, price);
         }
     }
 
-    let mut prices: Vec<f64> = oracle_prices.iter().map(|(_, p)| *p).collect();
-    prices.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let mut prices: Vec<u128> = price_reports.iter().map(|(_, p)| *p).collect();
+    prices.sort();
 
     let median = prices[prices.len() / 2];
-    let threshold = 0.20;
-    let valid_prices: Vec<f64> = prices
+    let threshold_bps: u128 = 2_000;
+
+    let valid_prices: Vec<u128> = prices
         .iter()
-        .filter(|&p| (*p - median).abs() / median < threshold)
+        .filter(|&&p| {
+            let diff = if p > median { p - median } else { median - p };
+            diff * 10_000 <= median * threshold_bps
+        })
         .copied()
         .collect();
 
-    let consensus_price = valid_prices.iter().sum::<f64>() / valid_prices.len() as f64;
+    let consensus_price = if valid_prices.is_empty() {
+        0
+    } else {
+        valid_prices.iter().sum::<u128>() / valid_prices.len() as u128
+    };
 
-    println!("\n📊 Consensus Result:");
-    println!("  - Median: ${:.2}", median);
-    println!("  - Valid Prices: {}/3", valid_prices.len());
-    println!("  - Consensus Price: ${:.2}", consensus_price);
+    println!("\nð Consensus Result:");
+    println!("  - Median: {} micro-USD", median);
+    println!("  - Valid Prices: {}/{}", valid_prices.len(), prices.len());
+    println!("  - Consensus Price: {} micro-USD", consensus_price);
 
     assert_eq!(valid_prices.len(), 2, "Should reject 1 outlier!");
-    assert!(consensus_price > 80000.0 && consensus_price < 100000.0);
+    assert!(consensus_price > 80_000_000_000 && consensus_price < 100_000_000_000);
 
-    println!("\n✅ TEST PASSED: Byzantine attack mitigated\n");
+    println!("\nâ TEST PASSED: Byzantine attack mitigated (integer-only math)\n");
 }
 
 // ========================================

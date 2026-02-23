@@ -10,7 +10,7 @@
 //   2. Zero-Trust Full Sync (multi-node ledger consistency)
 //   3. Financial Precision & Integrity (CIL atomic math, fee)
 //   4. Resilience & Node Recovery (crash + rejoin + state convergence)
-//   5. Proof-of-Burn & Distribution (yield curve, supply exhaustion)
+//   5. Distribution & Supply (yield curve, supply exhaustion)
 //   6. Validator Rewards (epoch distribution, linear stake, halving)
 //   7. aBFT Consensus 3-Phase (PrePrepare → Prepare → Commit)
 //   8. Slashing & Safety (double-sign detection, downtime penalties)
@@ -654,12 +654,12 @@ async fn test_node_recovery() {
 }
 
 // ============================================================================
-// TEST 5: PROOF-OF-BURN & DISTRIBUTION YIELD
+// TEST 5: DISTRIBUTION & SUPPLY YIELD
 // ============================================================================
 // Tests distribution.calculate_yield() with integer math only.
 #[tokio::test]
-async fn test_proof_of_burn_distribution() {
-    println!("\n🧪 TEST 5: Proof-of-Burn & Distribution Yield");
+async fn test_distribution_supply_yield() {
+    println!("\n🧪 TEST 5: Distribution & Supply Yield");
     println!("================================================\n");
 
     let ledger = Ledger::new();

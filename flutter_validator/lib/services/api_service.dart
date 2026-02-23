@@ -1008,7 +1008,7 @@ class ApiService {
     }
   }
 
-  // Proof-of-Burn
+  // Burn request
   Future<Map<String, dynamic>> submitBurn({
     required String losAddress,
     required String btcTxid,

@@ -88,7 +88,7 @@ The first production release of the Unauthority blockchain, running on the live 
 - **aBFT consensus** with asynchronous Byzantine Fault Tolerance.
 - **Block-lattice (DAG)** architecture for parallel transaction processing.
 - **Post-quantum cryptography** using Dilithium5 for all signing operations.
-- **SHA-3 (Keccak-256)** for all hashing operations.
+- **SHA-3 (NIST FIPS 202)** for all hashing operations.
 - **USP-01 token standard** for native fungible tokens and wrapped assets.
 - **DEX AMM smart contracts** via WASM Virtual Machine (UVM).
 - **46 REST API endpoints** covering accounts, blocks, transactions, validators, contracts, tokens, and DEX.
@@ -96,8 +96,8 @@ The first production release of the Unauthority blockchain, running on the live 
 - **Validator reward system**: 500,000 LOS non-inflationary pool, 5,000 LOS/epoch with halving every 48 epochs.
 - **Linear voting** (1 LOS = 1 vote) for Sybil-neutral governance.
 - **Flat fee model** — BASE_FEE_CIL per transaction.
-- **Proof-of-Burn** mechanism for deflationary pressure.
-- **Oracle price feed** contract for on-chain price data.
+- **PoW Mining** for fair public token distribution (~96.5% supply).
+- **Price feed** support for DEX smart contracts.
 - **Flutter Wallet** app (macOS) for sending, receiving, and burning LOS.
 - **Flutter Validator Dashboard** (macOS) for node monitoring and management.
 - **Tor integration** — all nodes auto-generate .onion addresses on startup.

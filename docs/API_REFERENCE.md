@@ -57,7 +57,7 @@ Node status overview with all available endpoints.
   "version": "1.0.13",
   "network": "mainnet",
   "status": "operational",
-  "description": "Decentralized blockchain with Proof-of-Burn consensus",
+  "description": "Decentralized blockchain with aBFT consensus",
   "endpoints": {
     "health": "GET /health - Health check",
     "supply": "GET /supply - Total supply, burned, remaining",
@@ -349,7 +349,7 @@ Search across blocks, accounts, and transaction hashes.
 
 ---
 
-## Transaction: Proof-of-Burn
+## Transaction: Burn Bridge
 
 ### POST `/burn`
 

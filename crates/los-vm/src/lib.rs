@@ -883,7 +883,7 @@ impl WasmEngine {
                     // Only the blockchain consensus (VOTE_RES flow) may mint LOS.
                     // Allowing contracts to mint would bypass supply controls.
                     return Err(
-                        "mint: operation not permitted — LOS minting requires PoB consensus"
+                        "mint: operation not permitted — LOS minting requires PoW consensus"
                             .to_string(),
                     );
                 }

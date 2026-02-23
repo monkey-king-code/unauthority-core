@@ -77,8 +77,6 @@ Core blockchain primitives and state management. No I/O — pure logic.
 |---|---|
 | `lib.rs` | `Block`, `AccountState`, `Ledger`, `BlockType`, PoW, genesis loading |
 | `distribution.rs` | Supply distribution tracking, burn accounting (u128 arithmetic) |
-| `oracle_consensus.rs` | Decentralized oracle BFT median aggregation (micro-USD u128) |
-| `bonding_curve.rs` | LOS pricing curve (testnet-only, gated behind `#[cfg(not(feature = "mainnet"))]`) |
 | `validator_config.rs` | Validator configuration structures |
 | `validator_rewards.rs` | Reward pool distribution: `budget × stake / Σ(all_stakes)` (linear) |
 | `pow_mint.rs` | PoW mining engine: SHA3-256, epoch management, proof verification |

@@ -13,7 +13,6 @@ use los_consensus::abft::ABFTConsensus; // aBFT engine for consensus stats & saf
 use los_consensus::checkpoint::{CheckpointManager, CheckpointSignature, FinalityCheckpoint, PendingCheckpoint, CHECKPOINT_INTERVAL}; // Finality checkpoints
 use los_consensus::slashing::SlashingManager; // Slashing enforcement
 use los_consensus::voting::calculate_voting_power; // Linear voting: Power = Stake
-use los_core::oracle_consensus::OracleConsensus; // NEW: Oracle consensus
 use los_core::pow_mint::MiningState; // PoW Mint distribution engine
 use los_core::validator_rewards::ValidatorRewardPool;
 use los_core::{AccountState, Block, BlockType, Ledger, CIL_PER_LOS, MIN_VALIDATOR_STAKE_CIL};
@@ -458,7 +457,6 @@ pub struct ApiServerConfig {
     pub my_address: String,
     pub secret_key: Zeroizing<Vec<u8>>,
     pub api_port: u16,
-    pub oracle_consensus: Arc<Mutex<OracleConsensus>>,
     pub metrics: Arc<LosMetrics>,
     pub database: Arc<LosDatabase>,
     pub slashing_manager: Arc<Mutex<SlashingManager>>,
@@ -504,7 +502,6 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
         my_address,
         secret_key,
         api_port,
-        oracle_consensus,
         metrics,
         database,
         slashing_manager,
@@ -1205,7 +1202,6 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
     let p_burn = pending_burns.clone();
     let tx_burn = tx_out.clone();
     let l_burn = ledger.clone();
-    let oc_burn = oracle_consensus.clone();
     let bl_burn = burn_limiter.clone();
     let pk_burn = node_public_key.clone();
     let sk_burn = secret_key.clone();
@@ -1213,8 +1209,8 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
     let burn_route = warp::path("burn")
         .and(warp::post())
         .and(warp::body::bytes())
-        .and(with_state((p_burn, tx_burn, my_address.clone(), l_burn, oc_burn, bl_burn, (pk_burn, sk_burn, bv_burn))))
-        .then(#[allow(clippy::type_complexity)] |body: bytes::Bytes, (p, tx, my_addr, l, oc, rate_lim, (node_pk, node_sk, bv)): (Arc<Mutex<HashMap<String, (u128, u128, String, u128, u64, String)>>>, mpsc::Sender<String>, String, Arc<Mutex<Ledger>>, Arc<Mutex<OracleConsensus>>, Arc<EndpointRateLimiter>, (Vec<u8>, Zeroizing<Vec<u8>>, Arc<Mutex<HashMap<String, HashSet<String>>>>))| async move {
+        .and(with_state((p_burn, tx_burn, my_address.clone(), l_burn, bl_burn, (pk_burn, sk_burn, bv_burn))))
+        .then(#[allow(clippy::type_complexity)] |body: bytes::Bytes, (p, tx, my_addr, l, rate_lim, (node_pk, node_sk, bv)): (Arc<Mutex<HashMap<String, (u128, u128, String, u128, u64, String)>>>, mpsc::Sender<String>, String, Arc<Mutex<Ledger>>, Arc<EndpointRateLimiter>, (Vec<u8>, Zeroizing<Vec<u8>>, Arc<Mutex<HashMap<String, HashSet<String>>>>))| async move {
 
             // FIX BUG-3: Parse JSON manually to return proper 400 instead of 500
             let req: BurnRequest = match serde_json::from_slice(&body) {
@@ -1340,22 +1336,8 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                 }));
             }
 
-            // 3. Process Oracle: Use Consensus if available, fallback to single-node
-            let consensus_price_opt = {
-                let oc_guard = safe_lock(&oc);
-                oc_guard.get_consensus_price()
-            }; // Drop lock before await
-
-            let (ep, bp) = match consensus_price_opt {
-                Some((eth_median, btc_median)) => {
-                    println!("✅ Using Oracle Consensus for burn calculation");
-                    (eth_median, btc_median)
-                },
-                None => {
-                    println!("⚠️ Consensus not yet available, using single-node oracle");
-                    get_crypto_prices().await
-                }
-            };
+            // 3. Fetch external prices for burn calculation
+            let (ep, bp) = get_crypto_prices().await;
 
             let res = if req.coin_type.to_lowercase() == "eth" {
                 verify_eth_burn_tx(&clean_txid).await.map(|(a, bt)| (a, ep, "ETH", bt))
@@ -1601,11 +1583,11 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                 }))
             } else {
                 let coin = req.coin_type.to_lowercase();
-                println!("❌ Burn verification FAILED for {} TXID: {} — Oracle returned None", coin.to_uppercase(), &clean_txid[..clean_txid.len().min(16)]);
+                println!("❌ Burn verification FAILED for {} TXID: {} — price API returned None", coin.to_uppercase(), &clean_txid[..clean_txid.len().min(16)]);
                 println!("   ↳ Possible causes: TX not yet confirmed on-chain, burn address mismatch, or API unreachable");
                 api_json(serde_json::json!({
                     "status": "error",
-                    "msg": format!("Oracle verification failed for {} TXID. This can happen if: (1) TX is not yet confirmed on the {} blockchain, (2) TX does not send to the official burn address, or (3) the oracle API is currently unreachable. Please wait for blockchain confirmation and try again.", coin.to_uppercase(), coin.to_uppercase())
+                    "msg": format!("Burn verification failed for {} TXID. This can happen if: (1) TX is not yet confirmed on the {} blockchain, (2) TX does not send to the official burn address, or (3) the price API is currently unreachable. Please wait for blockchain confirmation and try again.", coin.to_uppercase(), coin.to_uppercase())
                 }))
             }
         });
@@ -2800,7 +2782,7 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
             "name": "Unauthority (LOS) Blockchain API",
             "version": env!("CARGO_PKG_VERSION"),
             "network": network_label,
-            "description": "Decentralized blockchain with Proof-of-Burn consensus",
+            "description": "Decentralized blockchain with aBFT consensus",
             "endpoints": {
                 "health": "GET /health - Health check",
                 "node_info": "GET /node-info - Node information",
@@ -2829,7 +2811,7 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                 "metrics": "GET /metrics - Prometheus metrics",
                 "mempool_stats": "GET /mempool/stats - Mempool statistics",
                 "send": "POST /send {from, target, amount} - Send transaction",
-                "burn": "POST /burn {chain, tx_hash} - Proof-of-burn mint",
+                "burn": "POST /burn {chain, tx_hash} - Burn bridge (wrapped asset mint)",
                 "faucet": "POST /faucet {address} - Claim testnet tokens",
                 "register_validator": "POST /register-validator - Register as validator",
                 "unregister_validator": "POST /unregister-validator - Unregister validator",
@@ -4231,7 +4213,7 @@ async fn get_crypto_prices() -> (u128, u128) {
     /// 1 USD = 1,000,000 micro-USD
     const MICRO: u128 = 1_000_000;
 
-    // SECURITY: Route oracle requests through Tor SOCKS5 proxy if available
+    // SECURITY: Route price requests through Tor SOCKS5 proxy if available
     // Prevents IP leak when fetching prices from clearweb APIs
     let proxy_url = std::env::var("LOS_SOCKS5_PROXY").unwrap_or_default();
     let client = if !proxy_url.is_empty() {
@@ -4247,7 +4229,7 @@ async fn get_crypto_prices() -> (u128, u128) {
                 // DO NOT fall back to direct connection (would leak real IP).
                 // Return fail-closed prices (0) instead.
                 eprintln!(
-                    "🛑 Oracle SOCKS5 proxy failed ({}): {} — returning 0 (fail-closed, no IP leak)",
+                    "🛑 Price SOCKS5 proxy failed ({}): {} — returning 0 (fail-closed, no IP leak)",
                     proxy_url, e
                 );
                 return (0, 0);
@@ -4360,18 +4342,18 @@ async fn get_crypto_prices() -> (u128, u128) {
     }
 
     // Calculate Final Average (pure u128 integer math)
-    // SECURITY: On production testnet level, require at least 1 real oracle price
+    // SECURITY: On production testnet level, require at least 1 real price from API
     // Fallback prices are only used on functional/consensus levels
     // MAINNET SAFETY: On mainnet build, is_production_level is always true (forced by
     // testnet_config.rs LazyLock). Fallback prices can never be reached on mainnet.
-    let is_production_level = testnet_config::get_testnet_config().should_enable_oracle_consensus()
+    let is_production_level = testnet_config::get_testnet_config().should_enable_consensus()
         && testnet_config::is_production_simulation();
 
     // COMPILE-TIME GUARD: On mainnet feature, assert that fallback prices are unreachable
     #[cfg(feature = "mainnet")]
     debug_assert!(
         is_production_level,
-        "MAINNET: is_production_level must be true — oracle fallback prices are unreachable"
+        "MAINNET: is_production_level must be true — fallback prices are unreachable"
     );
 
     // Testnet fallback prices in micro-USD: ETH $2500, BTC $83000
@@ -4380,10 +4362,10 @@ async fn get_crypto_prices() -> (u128, u128) {
 
     let final_eth: u128 = if eth_prices.is_empty() {
         if is_production_level {
-            println!("🛑 PRODUCTION: All ETH oracle APIs failed — rejecting (fail-closed)");
+            println!("🛑 PRODUCTION: All ETH price APIs failed — rejecting (fail-closed)");
             0 // Fail-closed: returning 0 will cause burn validation to reject
         } else {
-            println!("⚠️ Oracle: No ETH prices from APIs, using testnet fallback $2500");
+            println!("⚠️ No ETH prices from APIs, using testnet fallback $2500");
             FALLBACK_ETH_MICRO
         }
     } else {
@@ -4394,10 +4376,10 @@ async fn get_crypto_prices() -> (u128, u128) {
 
     let final_btc: u128 = if btc_prices.is_empty() {
         if is_production_level {
-            println!("🛑 PRODUCTION: All BTC oracle APIs failed — rejecting (fail-closed)");
+            println!("🛑 PRODUCTION: All BTC price APIs failed — rejecting (fail-closed)");
             0 // Fail-closed
         } else {
-            println!("⚠️ Oracle: No BTC prices from APIs, using testnet fallback $83000");
+            println!("⚠️ No BTC prices from APIs, using testnet fallback $83000");
             FALLBACK_BTC_MICRO
         }
     } else {
@@ -4405,7 +4387,7 @@ async fn get_crypto_prices() -> (u128, u128) {
         sum / btc_prices.len() as u128
     };
 
-    // SECURITY FIX #15: Sanity bounds to reject manipulated oracle prices (micro-USD)
+    // SECURITY FIX #15: Sanity bounds to reject manipulated prices (micro-USD)
     // ETH reasonable range: $10 - $100,000 | BTC reasonable range: $100 - $10,000,000
     const ETH_MIN_MICRO: u128 = 10 * MICRO; // $10
     const ETH_MAX_MICRO: u128 = 100_000 * MICRO; // $100,000
@@ -4415,14 +4397,14 @@ async fn get_crypto_prices() -> (u128, u128) {
     let final_eth = if !(ETH_MIN_MICRO..=ETH_MAX_MICRO).contains(&final_eth) {
         if is_production_level || final_eth == 0 {
             println!(
-                "🛑 Oracle ETH price ${}.{:02} out of sanity bounds — fail-closed",
+                "🛑 ETH price ${}.{:02} out of sanity bounds — fail-closed",
                 final_eth / MICRO,
                 (final_eth % MICRO) / 10_000
             );
             0
         } else {
             println!(
-                "⚠️ Oracle ETH price ${}.{:02} out of sanity bounds, using fallback $2500",
+                "⚠️ ETH price ${}.{:02} out of sanity bounds, using fallback $2500",
                 final_eth / MICRO,
                 (final_eth % MICRO) / 10_000
             );
@@ -4435,14 +4417,14 @@ async fn get_crypto_prices() -> (u128, u128) {
     let final_btc = if !(BTC_MIN_MICRO..=BTC_MAX_MICRO).contains(&final_btc) {
         if is_production_level || final_btc == 0 {
             println!(
-                "🛑 Oracle BTC price ${}.{:02} out of sanity bounds — fail-closed",
+                "🛑 BTC price ${}.{:02} out of sanity bounds — fail-closed",
                 final_btc / MICRO,
                 (final_btc % MICRO) / 10_000
             );
             0
         } else {
             println!(
-                "⚠️ Oracle BTC price ${}.{:02} out of sanity bounds, using fallback $83000",
+                "⚠️ BTC price ${}.{:02} out of sanity bounds, using fallback $83000",
                 final_btc / MICRO,
                 (final_btc % MICRO) / 10_000
             );
@@ -4454,7 +4436,7 @@ async fn get_crypto_prices() -> (u128, u128) {
 
     // Show successful source count (for debugging)
     println!(
-        "📊 Oracle Prices ({} APIs): ETH ${}.{:02}, BTC ${}.{:02}",
+        "📊 External Prices ({} APIs): ETH ${}.{:02}, BTC ${}.{:02}",
         eth_prices.len(),
         final_eth / MICRO,
         (final_eth % MICRO) / 10_000,
@@ -4499,7 +4481,7 @@ fn parse_iso8601_to_unix(s: &str) -> Option<u64> {
 async fn verify_eth_burn_tx(txid: &str) -> Option<(u128, u64)> {
     // Testnet: Accept any valid format TXID and mock burn amount
     // TXID verification is an external dependency (real ETH blockchain) — mock it in testnet.
-    // Oracle price consensus and mint consensus still run for real at Level 2+.
+    // Price consensus and mint consensus still run for real at Level 2+.
     if testnet_config::get_testnet_config().enable_faucet {
         let clean_txid = txid.trim().trim_start_matches("0x").to_lowercase();
         if clean_txid.len() == 64 && clean_txid.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -4518,7 +4500,7 @@ async fn verify_eth_burn_tx(txid: &str) -> Option<(u128, u64)> {
     let proxy_url = std::env::var("LOS_SOCKS5_PROXY").unwrap_or_default();
 
     // Try up to 2 attempts: first via Tor SOCKS5, then direct if Tor fails.
-    // Oracle burn verification reads PUBLIC blockchain data — no privacy leak.
+    // Burn verification reads PUBLIC blockchain data — no privacy leak.
     // Many clearnet APIs (blockcypher) block Tor exit nodes.
     let attempts: Vec<(&str, bool)> = if proxy_url.is_empty() {
         vec![("direct", false)]
@@ -4532,20 +4514,20 @@ async fn verify_eth_burn_tx(txid: &str) -> Option<(u128, u64)> {
             if let Ok(proxy) = reqwest::Proxy::all(&proxy_url) {
                 builder = builder.proxy(proxy);
                 println!(
-                    "🌐 Oracle ETH [{}]: Using SOCKS5 proxy for blockcypher",
+                    "🌐 ETH price [{}]: Using SOCKS5 proxy for blockcypher",
                     label
                 );
             }
         } else if attempts.len() > 1 {
             builder = builder.no_proxy();
             println!(
-                "🌐 Oracle ETH [{}]: Tor failed/blocked, retrying direct HTTPS",
+                "🌐 ETH price [{}]: Tor failed/blocked, retrying direct HTTPS",
                 label
             );
         } else {
             builder = builder.no_proxy();
             println!(
-                "⚠️ Oracle ETH [{}]: No SOCKS5 proxy set, connecting directly",
+                "⚠️ ETH price [{}]: No SOCKS5 proxy set, connecting directly",
                 label
             );
         }
@@ -4553,21 +4535,21 @@ async fn verify_eth_burn_tx(txid: &str) -> Option<(u128, u64)> {
             Ok(c) => c,
             Err(e) => {
                 println!(
-                    "❌ Oracle ETH [{}]: Failed to build HTTP client: {}",
+                    "❌ ETH price [{}]: Failed to build HTTP client: {}",
                     label, e
                 );
                 continue;
             }
         };
         println!(
-            "🌐 Oracle ETH [{}]: Verifying TXID {} via blockcypher...",
+            "🌐 ETH price [{}]: Verifying TXID {} via blockcypher...",
             label, clean_txid
         );
         match client.get(&url).send().await {
             Ok(resp) => {
                 let status = resp.status();
                 println!(
-                    "🌐 Oracle ETH [{}]: blockcypher responded with HTTP {}",
+                    "🌐 ETH price [{}]: blockcypher responded with HTTP {}",
                     label, status
                 );
                 if !status.is_success() {
@@ -4583,7 +4565,7 @@ async fn verify_eth_burn_tx(txid: &str) -> Option<(u128, u64)> {
                             .unwrap_or(0);
                         if let Some(outputs) = json["outputs"].as_array() {
                             let target = BURN_ADDRESS_ETH.to_lowercase().replace("0x", "");
-                            println!("🌐 Oracle ETH [{}]: TX has {} outputs, checking for burn address...", label, outputs.len());
+                            println!("🌐 ETH price [{}]: TX has {} outputs, checking for burn address...", label, outputs.len());
                             for (i, out) in outputs.iter().enumerate() {
                                 if let Some(addrs) = out["addresses"].as_array() {
                                     for a in addrs {
@@ -4601,31 +4583,31 @@ async fn verify_eth_burn_tx(txid: &str) -> Option<(u128, u64)> {
                                                         .and_then(|s| s.parse::<u128>().ok())
                                                         .unwrap_or(0)
                                                 });
-                                            println!("✅ Oracle ETH [{}]: Found burn output #{}: {} wei to {} (block_time={})", label, i, wei, BURN_ADDRESS_ETH, block_time);
+                                            println!("✅ ETH price [{}]: Found burn output #{}: {} wei to {} (block_time={})", label, i, wei, BURN_ADDRESS_ETH, block_time);
                                             return Some((wei, block_time));
                                         }
                                     }
                                 }
                             }
                             println!(
-                                "❌ Oracle ETH [{}]: No output found to burn address {}",
+                                "❌ ETH price [{}]: No output found to burn address {}",
                                 label, BURN_ADDRESS_ETH
                             );
                         } else {
                             println!(
-                                "❌ Oracle ETH [{}]: No 'outputs' field in TX data. Error: {:?}",
+                                "❌ ETH price [{}]: No 'outputs' field in TX data. Error: {:?}",
                                 label,
                                 json.get("error")
                             );
                         }
                     }
                     Err(e) => {
-                        println!("❌ Oracle ETH [{}]: Failed to parse JSON: {}", label, e);
+                        println!("❌ ETH price [{}]: Failed to parse JSON: {}", label, e);
                     }
                 }
             }
             Err(e) => {
-                println!("❌ Oracle ETH [{}]: HTTP request failed: {}", label, e);
+                println!("❌ ETH price [{}]: HTTP request failed: {}", label, e);
                 println!("   ↳ Possible causes: TX not yet broadcast, Tor proxy down, or blockcypher blocks Tor exit nodes");
                 continue;
             }
@@ -4640,7 +4622,7 @@ async fn verify_eth_burn_tx(txid: &str) -> Option<(u128, u64)> {
 async fn verify_btc_burn_tx(txid: &str) -> Option<(u128, u64)> {
     // Testnet: Accept any valid format TXID and mock burn amount
     // TXID verification is an external dependency (real BTC blockchain) — mock it in testnet.
-    // Oracle price consensus and mint consensus still run for real at Level 2+.
+    // Price consensus and mint consensus still run for real at Level 2+.
     if testnet_config::get_testnet_config().enable_faucet {
         let clean_txid = txid.trim().to_lowercase();
         if clean_txid.len() == 64 && clean_txid.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -4658,7 +4640,7 @@ async fn verify_btc_burn_tx(txid: &str) -> Option<(u128, u64)> {
     let proxy_url = std::env::var("LOS_SOCKS5_PROXY").unwrap_or_default();
 
     // Try up to 2 attempts: first via Tor SOCKS5, then direct if Tor fails.
-    // Oracle burn verification reads PUBLIC blockchain data — no privacy leak.
+    // Burn verification reads PUBLIC blockchain data — no privacy leak.
     // Many clearnet APIs (mempool.space) block Tor exit nodes.
     let attempts: Vec<(&str, bool)> = if proxy_url.is_empty() {
         vec![("direct", false)]
@@ -4674,7 +4656,7 @@ async fn verify_btc_burn_tx(txid: &str) -> Option<(u128, u64)> {
             if let Ok(proxy) = reqwest::Proxy::all(&proxy_url) {
                 builder = builder.proxy(proxy);
                 println!(
-                    "🌐 Oracle BTC [{}]: Using SOCKS5 proxy for mempool.space",
+                    "🌐 BTC price [{}]: Using SOCKS5 proxy for mempool.space",
                     label
                 );
             }
@@ -4682,13 +4664,13 @@ async fn verify_btc_burn_tx(txid: &str) -> Option<(u128, u64)> {
             // reqwest may inherit system proxy; explicitly disable for direct fallback
             builder = builder.no_proxy();
             println!(
-                "🌐 Oracle BTC [{}]: Tor failed/blocked, retrying direct HTTPS",
+                "🌐 BTC price [{}]: Tor failed/blocked, retrying direct HTTPS",
                 label
             );
         } else {
             builder = builder.no_proxy();
             println!(
-                "⚠️ Oracle BTC [{}]: No SOCKS5 proxy set, connecting directly",
+                "⚠️ BTC price [{}]: No SOCKS5 proxy set, connecting directly",
                 label
             );
         }
@@ -4696,27 +4678,27 @@ async fn verify_btc_burn_tx(txid: &str) -> Option<(u128, u64)> {
             Ok(c) => c,
             Err(e) => {
                 println!(
-                    "❌ Oracle BTC [{}]: Failed to build HTTP client: {}",
+                    "❌ BTC price [{}]: Failed to build HTTP client: {}",
                     label, e
                 );
                 continue;
             }
         };
         println!(
-            "🌐 Oracle BTC [{}]: Verifying TXID {} via mempool.space...",
+            "🌐 BTC price [{}]: Verifying TXID {} via mempool.space...",
             label, txid
         );
         match client.get(&url).send().await {
             Ok(resp) => {
                 let status = resp.status();
                 println!(
-                    "🌐 Oracle BTC [{}]: mempool.space responded with HTTP {}",
+                    "🌐 BTC price [{}]: mempool.space responded with HTTP {}",
                     label, status
                 );
                 if !status.is_success() {
                     if let Ok(body) = resp.text().await {
                         println!(
-                            "❌ Oracle BTC [{}]: Error body: {}",
+                            "❌ BTC price [{}]: Error body: {}",
                             label,
                             &body[..body.len().min(200)]
                         );
@@ -4733,7 +4715,7 @@ async fn verify_btc_burn_tx(txid: &str) -> Option<(u128, u64)> {
                                     let block_time: u64 = json["status"]["block_time"]
                                         .as_u64()
                                         .unwrap_or(0);
-                                    println!("🌐 Oracle BTC [{}]: TX has {} outputs, block_time={}, checking for burn address...", label, vout.len(), block_time);
+                                    println!("🌐 BTC price [{}]: TX has {} outputs, block_time={}, checking for burn address...", label, vout.len(), block_time);
                                     for (i, out) in vout.iter().enumerate() {
                                         let out_str = out.to_string();
                                         if out_str.contains(BURN_ADDRESS_BTC) {
@@ -4749,18 +4731,18 @@ async fn verify_btc_burn_tx(txid: &str) -> Option<(u128, u64)> {
                                                         .and_then(|s| s.parse::<u128>().ok())
                                                         .unwrap_or(0)
                                                 });
-                                            println!("✅ Oracle BTC [{}]: Found burn output #{}: {} satoshi to {} (block_time={})", label, i, satoshi, BURN_ADDRESS_BTC, block_time);
+                                            println!("✅ BTC price [{}]: Found burn output #{}: {} satoshi to {} (block_time={})", label, i, satoshi, BURN_ADDRESS_BTC, block_time);
                                             return Some((satoshi, block_time));
                                         }
                                     }
-                                    println!("❌ Oracle BTC [{}]: No output found to burn address {}. Outputs: {}", label, BURN_ADDRESS_BTC, &body[..body.len().min(500)]);
+                                    println!("❌ BTC price [{}]: No output found to burn address {}. Outputs: {}", label, BURN_ADDRESS_BTC, &body[..body.len().min(500)]);
                                 } else {
-                                    println!("❌ Oracle BTC [{}]: No 'vout' field in TX data. Status field: {:?}", label, json.get("status"));
+                                    println!("❌ BTC price [{}]: No 'vout' field in TX data. Status field: {:?}", label, json.get("status"));
                                 }
                             }
                             Err(e) => {
                                 println!(
-                                    "❌ Oracle BTC [{}]: Failed to parse JSON: {}. Body: {}",
+                                    "❌ BTC price [{}]: Failed to parse JSON: {}. Body: {}",
                                     label,
                                     e,
                                     &body[..body.len().min(200)]
@@ -4770,7 +4752,7 @@ async fn verify_btc_burn_tx(txid: &str) -> Option<(u128, u64)> {
                     }
                     Err(e) => {
                         println!(
-                            "❌ Oracle BTC [{}]: Failed to read response body: {}",
+                            "❌ BTC price [{}]: Failed to read response body: {}",
                             label, e
                         );
                     }
@@ -4778,7 +4760,7 @@ async fn verify_btc_burn_tx(txid: &str) -> Option<(u128, u64)> {
             }
             Err(e) => {
                 println!(
-                    "❌ Oracle BTC [{}]: HTTP request failed: {} (URL: {})",
+                    "❌ BTC price [{}]: HTTP request failed: {} (URL: {})",
                     label, e, url
                 );
                 println!("   ↳ Possible causes: TX not yet broadcast, Tor proxy down, or mempool.space blocks Tor exit nodes");
@@ -5573,7 +5555,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if loaded_count > 0 {
                                 // NOTE: remaining_supply starts at PUBLIC_SUPPLY_CAP (20,400,700 LOS)
                                 // which already EXCLUDES the dev allocation (7%). Dev wallets are
-                                // a separate pre-genesis allocation, NOT minted from the PoB pool.
+                                // a separate pre-genesis allocation, NOT minted from the public mining pool.
                                 // Do NOT deduct genesis wallets from remaining_supply.
                                 save_to_disk_internal(&ledger_state, &database, true);
                                 println!(
@@ -5672,7 +5654,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     ));
                                 }
                                 // NOTE: remaining_supply = PUBLIC_SUPPLY_CAP already excludes
-                                // dev allocation. Genesis wallets are pre-allocated, not PoB-minted.
+                                // dev allocation. Genesis wallets are pre-allocated, not mined from public pool.
                                 save_to_disk_internal(&ledger_state, &database, true);
                                 println!(
                                     "🎁 Testnet genesis: loaded {} accounts ({} CIL pre-allocated)",
@@ -5862,8 +5844,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let validator_endpoints = Arc::new(Mutex::new(initial_endpoints));
 
-    // NEW: Oracle Consensus (decentralized median pricing)
-    let oracle_consensus = Arc::new(Mutex::new(OracleConsensus::new()));
 
     // PoW MINT ENGINE — Fair token distribution via SHA3 proof-of-work
     // miners compute SHA3-256(address || epoch || nonce) and submit proofs.
@@ -6015,7 +5995,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             } else {
-                // Production: Create empty account (balance from Proof-of-Burn only)
+                // Production: Create empty account (balance from PoW mining only)
                 l.accounts.insert(
                     my_address.clone(),
                     AccountState {
@@ -6340,7 +6320,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let api_address_book = Arc::clone(&address_book);
     let api_addr = my_address.clone();
     let api_key = Zeroizing::new(keys.secret_key.clone());
-    let api_oracle = Arc::clone(&oracle_consensus);
     let api_metrics = Arc::clone(&metrics);
     let api_database = Arc::clone(&database);
 
@@ -6393,7 +6372,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             my_address: api_addr,
             secret_key: api_key,
             api_port,
-            oracle_consensus: api_oracle,
             metrics: api_metrics,
             database: api_database,
             slashing_manager: api_slashing,
@@ -6444,59 +6422,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // --- NEW: ORACLE PRICE BROADCASTER (Every 30 seconds) ---
-    let oracle_tx = tx_out.clone();
-    let oracle_addr = my_address.clone();
-    let oracle_ledger = Arc::clone(&ledger);
-    let oracle_sk = Zeroizing::new(keys.secret_key.clone());
-    let oracle_pk = keys.public_key.clone();
+    // (Oracle price broadcaster removed — prices fetched on-demand)
 
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(30));
-        loop {
-            interval.tick().await;
-
-            // Check if node is validator (min 1,000 LOS)
-            let is_validator = {
-                let l = safe_lock(&oracle_ledger);
-                l.accounts
-                    .get(&oracle_addr)
-                    .map(|acc| acc.balance >= MIN_VALIDATOR_STAKE_CIL)
-                    .unwrap_or(false)
-            };
-
-            if is_validator {
-                // Fetch price from external oracle (returns micro-USD u128)
-                let (eth_price, btc_price) = get_crypto_prices().await;
-
-                // Sign the oracle payload: "addr:eth_micro:btc_micro" with Dilithium5
-                let payload = format!("{}:{}:{}", oracle_addr, eth_price, btc_price);
-                let sig = match los_crypto::sign_message(payload.as_bytes(), &oracle_sk) {
-                    Ok(s) => hex::encode(s),
-                    Err(e) => {
-                        eprintln!("❌ Oracle sign error: {:?}", e);
-                        continue;
-                    }
-                };
-                let pk_hex = hex::encode(&oracle_pk);
-
-                // Format: ORACLE_SUBMIT:addr:eth_micro:btc_micro:signature:pubkey
-                let oracle_msg = format!(
-                    "ORACLE_SUBMIT:{}:{}:{}:{}:{}",
-                    oracle_addr, eth_price, btc_price, sig, pk_hex
-                );
-                let _ = oracle_tx.send(oracle_msg).await;
-
-                println!(
-                    "📊 Broadcasting signed oracle prices: ETH=${}.{:02}, BTC=${}.{:02}",
-                    eth_price / 1_000_000,
-                    (eth_price % 1_000_000) / 10_000,
-                    btc_price / 1_000_000,
-                    (btc_price % 1_000_000) / 10_000
-                );
-            }
-        }
-    });
 
     // ══════════════════════════════════════════════════════════════════════
     // VALIDATOR REWARD SYSTEM — Heartbeat recording + Epoch distribution
@@ -7624,26 +7551,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 continue;
                             }
 
-                            // 4. PROCESS ORACLE (Use Consensus if available)
-                            println!("📊 Contacting Oracle for {}...", coin_type.to_uppercase());
+                            // 4. Fetch external prices for burn calculation
+                            println!("\u{1f4ca} Fetching prices for {}...", coin_type.to_uppercase());
 
-                            let consensus_price_opt = {
-                                let oc_guard = safe_lock(&oracle_consensus);
-                                oc_guard.get_consensus_price()
-                            }; // Drop lock before await
-
-                            let (ep, bp) = match consensus_price_opt {
-                                Some((eth_median, btc_median)) => {
-                                    println!("✅ Using Oracle Consensus: ETH=${}.{:02}, BTC=${}.{:02}",
-                                        eth_median / 1_000_000, (eth_median % 1_000_000) / 10_000,
-                                        btc_median / 1_000_000, (btc_median % 1_000_000) / 10_000);
-                                    (eth_median, btc_median)
-                                },
-                                None => {
-                                    println!("⚠️ Consensus not yet available, using single-node oracle");
-                                    get_crypto_prices().await
-                                }
-                            };
+                            let (ep, bp) = get_crypto_prices().await;
 
                             let res = if coin_type == "eth" {
                                 verify_eth_burn_tx(&clean_txid).await.map(|(a, bt)| (a, ep, "ETH", bt))
@@ -8132,7 +8043,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             // FORMAT: VOTE_REQ:coin_type:txid:requester_address:timestamp
                             // SECURITY FIX M-NEW-03: Limit concurrent VOTE_REQ tasks via semaphore.
                             // Without this, an attacker flooding VOTE_REQ messages creates unbounded
-                            // tokio tasks (each making HTTP oracle calls), exhausting memory/FDs → DoS.
+                            // tokio tasks (each making HTTP price API calls), exhausting memory/FDs → DoS.
                             static VOTE_SEMAPHORE: std::sync::LazyLock<Arc<tokio::sync::Semaphore>> =
                                 std::sync::LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(16)));
                             let parts: Vec<&str> = data.split(':').collect();
@@ -8180,7 +8091,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         return;
                                     }
 
-                                    // 2. Oracle Verification: Verify TXID to Blockchain Explorer
+                                    // 2. External Chain Verification: Verify TXID to Blockchain Explorer
                                     let verify_result = if coin_type == "eth" {
                                         verify_eth_burn_tx(&txid).await
                                     } else {
@@ -8226,76 +8137,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             &txid[..std::cmp::min(8, txid.len())], get_short_addr(&requester));
                                     }
                                 });
-                            }
-                        } else if data.starts_with("ORACLE_SUBMIT:") {
-                            // FORMAT: ORACLE_SUBMIT:validator_address:eth_price_micro:btc_price_micro:signature:pubkey
-                            let parts: Vec<&str> = data.split(':').collect();
-                            if parts.len() == 6 {
-                                let validator_addr = parts[1].to_string();
-                                let eth_price: u128 = parts[2].parse().unwrap_or(0);
-                                let btc_price: u128 = parts[3].parse().unwrap_or(0);
-                                let sig_hex = parts[4];
-                                let pk_hex = parts[5];
-
-                                // SECURITY: Verify Dilithium5 signature on oracle submission
-                                // Payload matches sender format: "addr:eth_micro:btc_micro"
-                                let payload = format!("{}:{}:{}", validator_addr, eth_price, btc_price);
-                                let sig_bytes = hex::decode(sig_hex).unwrap_or_default();
-                                let pk_bytes = hex::decode(pk_hex).unwrap_or_default();
-
-                                if !los_crypto::verify_signature(payload.as_bytes(), &sig_bytes, &pk_bytes) {
-                                    println!("🚨 Rejected oracle submission: invalid signature from {}",
-                                        get_short_addr(&validator_addr));
-                                    continue;
-                                }
-
-                                // Verify public key matches claimed validator address
-                                let derived_addr = los_crypto::public_key_to_address(&pk_bytes);
-                                if derived_addr != validator_addr {
-                                    println!("🚨 Rejected oracle submission: address mismatch (claimed {} but key derives {})",
-                                        get_short_addr(&validator_addr), get_short_addr(&derived_addr));
-                                    continue;
-                                }
-
-                                // Verify submitter is a validator (min 1000 LOS stake)
-                                {
-                                    let l = safe_lock(&ledger);
-                                    let is_validator = l.accounts.get(&validator_addr)
-                                        .map(|a| a.balance >= MIN_VALIDATOR_STAKE_CIL)
-                                        .unwrap_or(false);
-                                    if !is_validator {
-                                        println!("⚠️  Rejected oracle from non-validator: {}", get_short_addr(&validator_addr));
-                                        continue;
-                                    }
-                                }
-
-                                // Submit to oracle consensus (signature verified, u128 micro-USD)
-                                let mut oc = safe_lock(&oracle_consensus);
-
-                                // SECURITY FIX C-18: Update min_submissions based on validator count
-                                {
-                                    let l = safe_lock(&ledger);
-                                    let validator_count = l.accounts.values()
-                                        .filter(|a| a.is_validator && a.balance >= MIN_VALIDATOR_STAKE_CIL)
-                                        .count();
-                                    oc.update_min_submissions(validator_count);
-                                }
-
-                                oc.submit_price(validator_addr.clone(), eth_price, btc_price);
-
-                                // Check if consensus achieved
-                                if let Some((eth_median, btc_median)) = oc.get_consensus_price() {
-                                    println!("✅ Oracle Consensus: ETH=${}.{:02}, BTC=${}.{:02} (from {} validators)",
-                                        eth_median / 1_000_000, (eth_median % 1_000_000) / 10_000,
-                                        btc_median / 1_000_000, (btc_median % 1_000_000) / 10_000,
-                                        oc.submission_count());
-                                } else {
-                                    let needed = oc.min_submissions().saturating_sub(oc.submission_count());
-                                    println!("📊 Oracle submission from {} ({} more validators needed)",
-                                        get_short_addr(&validator_addr),
-                                        needed
-                                    );
-                                }
                             }
                         } else if data.starts_with("SLASH_REQ:") {
                             // FORMAT: SLASH_REQ:cheater_address:fake_txid:proposer_addr:timestamp:signature:pubkey (7 parts)

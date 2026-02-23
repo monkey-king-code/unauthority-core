@@ -18,7 +18,7 @@ pub enum TestnetLevel {
 
     /// Level 2: Consensus testing  
     /// - Real aBFT consensus
-    /// - Real oracle aggregation
+    /// - Real price aggregation (smart contract)
     /// - Testnet economic parameters
     Consensus,
 
@@ -36,7 +36,6 @@ pub struct TestnetConfig {
     pub enable_faucet: bool,
     /// Consensus quorum threshold in basis points (6700 = 67%)
     pub consensus_threshold_bps: u32,
-    pub oracle_consensus: bool,
     pub signature_validation: bool,
     pub byzantine_testing: bool,
     pub economic_incentives: bool,
@@ -49,7 +48,6 @@ impl TestnetConfig {
             level: TestnetLevel::Functional,
             enable_faucet: true,
             consensus_threshold_bps: 0,  // Immediate finalization
-            oracle_consensus: false,     // Mock prices
             signature_validation: false, // Allow any signature
             byzantine_testing: false,
             economic_incentives: false,
@@ -62,7 +60,6 @@ impl TestnetConfig {
             level: TestnetLevel::Consensus,
             enable_faucet: true,
             consensus_threshold_bps: 6700, // Real BFT threshold (67%)
-            oracle_consensus: true,        // Real oracle aggregation
             signature_validation: true,    // Real Dilithium5 (post-quantum) validation
             byzantine_testing: true,       // Enable byzantine scenarios
             economic_incentives: false,    // No real staking rewards yet
@@ -75,7 +72,6 @@ impl TestnetConfig {
             level: TestnetLevel::Production,
             enable_faucet: false,          // No faucet in production
             consensus_threshold_bps: 6700, // Real BFT (67%)
-            oracle_consensus: true,        // Real oracle
             signature_validation: true,    // Full validation
             byzantine_testing: true,       // Byzantine resistance
             economic_incentives: true,     // Real validator economics
@@ -88,10 +84,6 @@ impl TestnetConfig {
             self.level,
             TestnetLevel::Consensus | TestnetLevel::Production
         )
-    }
-
-    pub fn should_enable_oracle_consensus(&self) -> bool {
-        self.oracle_consensus
     }
 
     #[allow(dead_code)]
@@ -140,7 +132,7 @@ static TESTNET_CONFIG: std::sync::LazyLock<TestnetConfig> = std::sync::LazyLock:
             TestnetConfig::functional()
         }
         Ok("consensus") => {
-            println!("🧪 TESTNET Level 2: Consensus testing (real aBFT, real signatures, oracle aggregation)");
+            println!("🧪 TESTNET Level 2: Consensus testing (real aBFT, real signatures, PoW mining)");
             TestnetConfig::consensus_testing()
         }
         Ok("production") => {

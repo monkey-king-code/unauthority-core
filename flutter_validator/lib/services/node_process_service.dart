@@ -582,7 +582,7 @@ class NodeProcessService extends ChangeNotifier {
     // the node's REST/gRPC API is up and serving requests.
     if (line.contains('API Server running at') ||
         line.contains('gRPC Server STARTED') ||
-        line.contains('UNAUTHORITY (LOS) ORACLE NODE')) {
+        line.contains('UNAUTHORITY (LOS)')) {
       if (_status != NodeStatus.running) {
         _status = NodeStatus.running;
         _addLog('✅ Node is running!');
@@ -596,7 +596,7 @@ class NodeProcessService extends ChangeNotifier {
     // CRITICAL FIX: Only treat truly FATAL errors as node failures.
     // Previously `line.contains('❌')` matched non-fatal errors like:
     //   "❌ P2P dial error: Transport(Timeout)" — normal Tor jitter
-    //   "❌ Oracle sign error" — transient signing failure
+    //   "❌ Gossip sign error" — transient signing failure
     //   "❌ Auto-Receive signing failed" — non-critical
     // These set NodeStatus.error → killed the running node.
     //

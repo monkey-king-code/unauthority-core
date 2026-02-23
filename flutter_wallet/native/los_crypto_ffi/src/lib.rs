@@ -5,7 +5,7 @@
 //! - Message signing / verification
 //! - LOS address derivation (Base58Check, matching los-crypto backend)
 //! - Address validation
-//! - PoW mining (native Keccak-256, 100-1000x faster than pure Dart)
+//! - PoW mining (native SHA3-256, 100-1000x faster than pure Dart)
 //!
 //! All functions use pre-allocated buffers and return status codes.
 //! Return values: 0 or positive = success, negative = error.
@@ -19,7 +19,7 @@ use pqcrypto_dilithium::dilithium5::{
 use pqcrypto_traits::sign::{PublicKey, SecretKey, DetachedSignature};
 use blake2::Blake2b512;
 use sha2::Sha256;
-use sha3::Keccak256;
+use sha3::Sha3_256;
 use digest::Digest;
 use zeroize::Zeroize;
 
@@ -389,17 +389,17 @@ pub extern "C" fn los_validate_address(
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// POW MINING — Native Keccak-256 (100-1000x faster than pure Dart)
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// POW MINING — Native SHA3-256 (NIST FIPS 202) (100-1000x faster than pure Dart)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-/// Mine Proof-of-Work using native Keccak-256.
+/// Mine Proof-of-Work using native SHA3-256 (NIST FIPS 202).
 ///
 /// Dart builds the signing_hash input buffer (all block fields serialized)
 /// with a placeholder 8-byte work field at `work_offset`. This function
-/// iterates nonces in the work field and computes Keccak-256 until the
+/// iterates nonces in the work field and computes SHA3-256 until the
 /// hash has `difficulty_bits` leading zero bits.
 ///
-/// ~100-1000x faster than pure Dart Keccak-256 (pointycastle).
+/// ~100-1000x faster than pure Dart SHA3-256 (pointycastle).
 ///
 /// # Arguments
 /// - `buffer`:          Pre-built signing_hash input (mutable — work field is overwritten)
@@ -408,7 +408,7 @@ pub extern "C" fn los_validate_address(
 /// - `difficulty_bits`:  Required leading zero bits (e.g., 16)
 /// - `max_iterations`:  Maximum nonces to try before giving up
 /// - `nonce_out`:       Output: the successful nonce (u64)
-/// - `hash_out`:        Output: hex-encoded signing hash (64 bytes for Keccak-256)
+/// - `hash_out`:        Output: hex-encoded signing hash (64 bytes for SHA3-256)
 /// - `hash_capacity`:   Size of hash_out buffer (must be >= 64)
 ///
 /// # Returns
@@ -456,8 +456,8 @@ pub extern "C" fn los_mine_pow(
         let nonce_bytes = nonce.to_le_bytes();
         buf[w_off..w_off + 8].copy_from_slice(&nonce_bytes);
 
-        // Keccak-256 hash
-        let hash = Keccak256::digest(&*buf);
+        // SHA3-256 hash (NIST FIPS 202 — matches los-core::Block::signing_hash)
+        let hash = Sha3_256::digest(&*buf);
 
         // Check leading zero bits (fast byte-level check)
         let mut valid = true;

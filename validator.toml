@@ -150,7 +150,7 @@ dynamic_scaling_enabled = true
 spam_threshold_tx_per_sec = 10
 spam_scaling_factor = 2
 
-# Burn limit per block (prevents PoB abuse per block)
+# Burn limit per block (prevents burn abuse per block)
 burn_limit_per_block_cil = 1000000000
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

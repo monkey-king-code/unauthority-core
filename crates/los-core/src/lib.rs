@@ -13,10 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Maximum allowed timestamp drift from current time (5 minutes)
 pub const MAX_TIMESTAMP_DRIFT_SECS: u64 = 300;
 
-#[cfg(not(feature = "mainnet"))]
-pub mod bonding_curve;
 pub mod distribution;
-pub mod oracle_consensus;
 pub mod pow_mint;
 pub mod validator_config;
 pub mod validator_rewards;

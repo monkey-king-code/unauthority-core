@@ -224,7 +224,7 @@ pub fn calculate_escalation_multiplier(current_violations: u32, base_factor: u32
 // BURN LIMIT PER BLOCK
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-/// Maximum CIL that can be obtained via PoB in single block (1000 LOS as per whitepaper)
+/// Maximum CIL that can be burned in a single block (1000 LOS as per whitepaper)
 /// 1 LOS = 100_000_000_000 CIL (10^11)
 pub const BURN_LIMIT_PER_BLOCK_CIL: u128 = 1_000 * 100_000_000_000; // 1000 LOS max per block
 

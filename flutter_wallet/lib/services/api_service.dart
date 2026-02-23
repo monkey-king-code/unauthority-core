@@ -858,7 +858,7 @@ class ApiService {
     }
   }
 
-  // Proof-of-Burn — matches backend BurnRequest { coin_type, txid, recipient_address, signature, public_key }
+  // Burn — matches backend BurnRequest { coin_type, txid, recipient_address, signature, public_key }
   Future<Map<String, dynamic>> submitBurn({
     required String coinType, // "btc" or "eth"
     required String txid,

@@ -426,7 +426,7 @@ GET /supply
 | `total_supply` | Fixed total: 21,936,236 LOS |
 | `circulating_supply` | Currently distributed tokens |
 | `burned_supply` | Tokens destroyed via contract burns |
-| `remaining_public_supply` | Remaining tokens available through Proof-of-Burn |
+| `remaining_public_supply` | Remaining tokens available through PoW mining |
 
 ### Reward Pool Info
 

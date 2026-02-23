@@ -2,7 +2,7 @@ import '../utils/log.dart';
 import 'dart:convert';
 import 'dart:isolate';
 import 'package:flutter/foundation.dart';
-import 'package:pointycastle/digests/keccak.dart';
+import 'package:pointycastle/digests/sha3.dart';
 import 'api_service.dart';
 import 'dilithium_service.dart';
 import 'wallet_service.dart';
@@ -11,7 +11,7 @@ import '../constants/blockchain.dart';
 /// Client-side block-lattice block construction for LOS.
 ///
 /// Matches the backend's Block struct and signing_hash() exactly:
-/// - Keccak-256 with CHAIN_ID domain separation (via pointycastle)
+/// - SHA3-256 with CHAIN_ID domain separation (via pointycastle)
 /// - PoW anti-spam: 16 leading zero bits
 /// - Dilithium5 signature over signing_hash
 ///
@@ -124,7 +124,7 @@ class BlockConstructionService {
   /// 1. Fetch sender's frontier (head block hash) from node
   /// 2. Construct Block with all fields
   /// 3. Mine PoW (16 zero bits anti-spam)
-  /// 4. Sign with Dilithium5 (Keccak-256 signing_hash)
+  /// 4. Sign with Dilithium5 (SHA3-256 signing_hash)
   /// 5. Submit pre-signed to POST /send
   ///
   /// Returns the transaction result from the node.
@@ -247,7 +247,7 @@ class BlockConstructionService {
   /// Compute the signing_hash — delegates to static method for isolate compatibility.
   /// This is kept as a convenience entry point for non-PoW uses.
   ///
-  /// Keccak-256 of:
+  /// SHA3-256 of:
   ///   chain_id (u64 LE) || account || previous || block_type (1 byte) ||
   ///   amount (u128 LE) || link || public_key || work (u64 LE) ||
   ///   timestamp (u64 LE) || fee (u128 LE)
@@ -281,7 +281,7 @@ class BlockConstructionService {
   /// The heavy nonce loop runs off the main thread via Isolate.run().
   ///
   /// OPTIMIZATION: If the native Rust FFI library is available (DilithiumService),
-  /// uses native Keccak-256 for 100-1000x speedup. Falls back to pure Dart
+  /// uses native SHA3-256 for 100-1000x speedup. Falls back to pure Dart
   /// if the native library is not loaded.
   Future<Map<String, dynamic>?> _minePoWInIsolate({
     required int chainId,
@@ -330,7 +330,7 @@ class BlockConstructionService {
 
     // Try native Rust PoW first (100-1000x faster)
     if (DilithiumService.isAvailable) {
-      losLog('⚡ [PoW] Using native Rust Keccak-256');
+      losLog('⚡ [PoW] Using native Rust SHA3-256');
       final result = DilithiumService.minePow(
         buffer: buffer,
         workOffset: workOffset,
@@ -435,7 +435,7 @@ class BlockConstructionService {
     final workBytes = ByteData.sublistView(buffer, workOffset, workOffset + 8);
 
     final sw = Stopwatch()..start();
-    final keccak = KeccakDigest(256);
+    final sha3 = SHA3Digest(256);
     final requiredZeroBytes = diffBits ~/ 8;
     final remainingBits = diffBits % 8;
     final mask = remainingBits > 0 ? (0xFF << (8 - remainingBits)) & 0xFF : 0;
@@ -444,9 +444,9 @@ class BlockConstructionService {
       // Update only the 8-byte work field in-place
       workBytes.setUint64(0, nonce, Endian.little);
 
-      // Hash with reusable KeccakDigest instance
-      keccak.reset();
-      final output = keccak.process(buffer);
+      // Hash with reusable SHA3Digest instance
+      sha3.reset();
+      final output = sha3.process(buffer);
 
       // Fast leading-zero-bits check (byte-level, no hex conversion)
       bool valid = true;
@@ -515,7 +515,7 @@ class BlockConstructionService {
     // fee (u128 LE)
     data.addAll(_u128ToLeBytesStatic(BigInt.from(fee)));
 
-    return _keccak256Static(Uint8List.fromList(data));
+    return _sha3_256Static(Uint8List.fromList(data));
   }
 
   /// Static u128 LE for isolate use.
@@ -530,13 +530,13 @@ class BlockConstructionService {
   }
 
   // ════════════════════════════════════════════════════════════════════
-  // Keccak-256 — via pointycastle (pre-NIST Keccak, matches sha3::Keccak256)
-  // ════════════════════════════════════════════════════════════════════
+  // SHA3-256 — via pointycastle (NIST FIPS 202 SHA-3, matches sha3::Sha3_256)
+  // ════════════════════════════════════════════════════════════════
 
-  /// Keccak-256 using pointycastle's verified implementation.
+  /// SHA3-256 using pointycastle's verified implementation.
   /// Works in isolates (pure Dart, no FFI).
-  static String _keccak256Static(Uint8List input) {
-    final digest = KeccakDigest(256);
+  static String _sha3_256Static(Uint8List input) {
+    final digest = SHA3Digest(256);
     final output = digest.process(input);
     return output.map((b) => b.toRadixString(16).padLeft(2, '0')).join('');
   }

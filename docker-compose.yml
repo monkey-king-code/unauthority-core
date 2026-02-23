@@ -1,5 +1,13 @@
 version: '3.8'
 
+# ======================================================================
+# ⚠️  LOCAL TESTNET ONLY — DO NOT USE FOR MAINNET
+# ======================================================================
+# This docker-compose runs validators on clearnet (no Tor).
+# Mainnet validators MUST run on Tor Hidden Services (.onion).
+# See docs/TOR_SETUP.md for production deployment.
+# ======================================================================
+#
 # Unauthority (LOS) — 4-Validator Testnet via Docker
 # SECURITY: genesis_config.json has been stripped of private_key/seed_phrase.
 # If you regenerate genesis, re-strip secrets before deployment.
