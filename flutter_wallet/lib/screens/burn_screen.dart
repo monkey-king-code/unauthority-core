@@ -5,7 +5,7 @@ import '../config/testnet_config.dart';
 import '../services/wallet_service.dart';
 import '../services/api_service.dart';
 
-/// Proof-of-Burn Screen
+/// Burn Bridge Screen
 ///
 /// Matches backend `BurnRequest`: `{ coin_type: "eth"|"btc", txid: String, recipient_address: Option<String> }`
 class BurnScreen extends StatefulWidget {
@@ -45,7 +45,7 @@ class _BurnScreenState extends State<BurnScreen> {
       losLog('🔥 [Burn] Coin: $_selectedCoin, TXID: $cleanTxid');
       losLog('🔥 [Burn] Recipient: $recipientAddress');
 
-      // FIX F3: Sign burn message for authenticated burns.
+      // Sign burn message for authenticated burns.
       // Backend expects: "BURN:{coin_type}:{txid}:{recipient}"
       String? signature;
       if (publicKeyHex != null) {
@@ -70,7 +70,7 @@ class _BurnScreenState extends State<BurnScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-              'Burn submitted! ${result['msg'] ?? 'Pending oracle verification'}'),
+              'Burn submitted! ${result['msg'] ?? 'Pending validator verification'}'),
           backgroundColor: Colors.green,
           duration: const Duration(seconds: 5),
         ),
@@ -90,7 +90,7 @@ class _BurnScreenState extends State<BurnScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Proof-of-Burn'),
+        title: const Text('Burn Bridge'),
         centerTitle: true,
       ),
       body: SafeArea(
@@ -266,8 +266,8 @@ class _BurnScreenState extends State<BurnScreen> {
                         SizedBox(height: 8),
                         Text(
                           '• Send BTC/ETH to the burn address FIRST\n'
-                          '• Oracle validators verify on-chain automatically\n'
-                          '• LOS amount is calculated from live oracle prices\n'
+                          '• Validators verify on-chain automatically\n'
+                          '• LOS amount is calculated from live prices\n'
                           '• Max 1,000 LOS per block (Mint cap protection)\n'
                           '• Rate limit: 1 burn per 5 minutes\n'
                           '• False submissions are rejected automatically',

@@ -3,8 +3,9 @@ import '../utils/secure_clipboard.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../constants/blockchain.dart';
+import '../services/api_service.dart';
 import '../services/wallet_service.dart';
-import 'wallet_setup_screen.dart';
+import '../main.dart' show SplashScreen;
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -16,8 +17,16 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   bool _showSeedPhrase = false;
   String? _seedPhrase;
+  List<String> _customNodes = [];
+  final TextEditingController _nodeUrlController = TextEditingController();
 
-  /// SECURITY FIX M-02: Clear seed phrase reference on widget disposal.
+  @override
+  void initState() {
+    super.initState();
+    _loadCustomNodes();
+  }
+
+  /// Clear seed phrase reference on widget disposal.
   /// Removes the Dart String reference so GC can collect sooner.
   /// (Dart Strings are immutable — content persists until GC, but
   /// removing the reference is the best Dart can do.)
@@ -25,12 +34,41 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void dispose() {
     _seedPhrase = null;
     _showSeedPhrase = false;
+    _nodeUrlController.dispose();
     super.dispose();
   }
 
-  /// FIX H-02: Lazy-load seed phrase only when user taps reveal.
+  Future<void> _loadCustomNodes() async {
+    final api = context.read<ApiService>();
+    final nodes = await api.getCustomNodes();
+    if (mounted) setState(() => _customNodes = nodes);
+  }
+
+  Future<void> _addCustomNode() async {
+    final url = _nodeUrlController.text.trim();
+    if (url.isEmpty) return;
+
+    final api = context.read<ApiService>();
+    final result = await api.addCustomNode(url);
+
+    if (mounted) {
+      _nodeUrlController.clear();
+      await _loadCustomNodes();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(result), duration: const Duration(seconds: 3)),
+      );
+    }
+  }
+
+  Future<void> _removeCustomNode(String url) async {
+    final api = context.read<ApiService>();
+    await api.removeCustomNode(url);
+    if (mounted) await _loadCustomNodes();
+  }
+
+  /// Lazy-load seed phrase only when user taps reveal.
   /// Prevents keeping mnemonic in widget state longer than necessary.
-  /// SECURITY FIX A-03: Require user confirmation before revealing seed phrase.
+  /// Require user confirmation before revealing seed phrase.
   /// This prevents shoulder-surfing and casual access on unlocked devices.
   Future<void> _revealSeedPhrase() async {
     losLog(
@@ -41,7 +79,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       return;
     }
 
-    // SECURITY FIX A-03: Gate behind explicit user confirmation
+    // Gate behind explicit user confirmation
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -90,7 +128,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   void _copySeedPhrase() {
     if (_seedPhrase != null) {
-      // SECURITY FIX I-01: Use SecureClipboard with auto-clear (30s default)
+      // Use SecureClipboard with auto-clear (30s default)
       SecureClipboard.copy(_seedPhrase!);
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -131,8 +169,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
       await walletService.clearWallet();
 
       if (mounted) {
+        // Navigate back to SplashScreen so user can choose network
+        // (mainnet/testnet) before re-entering the wallet.
         Navigator.of(context).pushAndRemoveUntil(
-          MaterialPageRoute(builder: (_) => const WalletSetupScreen()),
+          MaterialPageRoute(builder: (_) => const SplashScreen()),
           (route) => false,
         );
       }
@@ -190,7 +230,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             ),
                           ],
                         ),
-                        // SECURITY FIX F-03: Screenshot/screen-recording warning
+                        // Screenshot/screen-recording warning
                         const SizedBox(height: 8),
                         Container(
                           padding: const EdgeInsets.all(8),
@@ -269,6 +309,79 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
           const SizedBox(height: 24),
 
+          // Custom Nodes — Bootstrap Independence
+          Card(
+            margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: Column(
+              children: [
+                const ListTile(
+                  leading: Icon(Icons.dns, color: Colors.teal),
+                  title: Text('Custom Nodes'),
+                  subtitle: Text(
+                    'Add validator URLs for network access.\n'
+                    'If bootstrap nodes are offline, manually add '
+                    'any known validator to connect.',
+                  ),
+                ),
+                const Divider(height: 1),
+                Padding(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _nodeUrlController,
+                          decoration: const InputDecoration(
+                            hintText: 'e.g. 1.2.3.4:3030 or xyz.onion:80',
+                            isDense: true,
+                            border: OutlineInputBorder(),
+                            contentPadding: EdgeInsets.symmetric(
+                                horizontal: 12, vertical: 10),
+                          ),
+                          style: const TextStyle(
+                              fontFamily: 'monospace', fontSize: 13),
+                          onSubmitted: (_) => _addCustomNode(),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      IconButton(
+                        icon: const Icon(Icons.add_circle, color: Colors.teal),
+                        onPressed: _addCustomNode,
+                        tooltip: 'Add Node',
+                      ),
+                    ],
+                  ),
+                ),
+                if (_customNodes.isNotEmpty) ...[
+                  const Divider(height: 1),
+                  ..._customNodes.map((url) => ListTile(
+                        dense: true,
+                        leading: Icon(
+                          url.contains('.onion')
+                              ? Icons.security
+                              : Icons.public,
+                          size: 18,
+                          color: Colors.grey,
+                        ),
+                        title: Text(
+                          url,
+                          style: const TextStyle(
+                              fontFamily: 'monospace', fontSize: 12),
+                        ),
+                        trailing: IconButton(
+                          icon: const Icon(Icons.remove_circle_outline,
+                              color: Colors.red, size: 20),
+                          onPressed: () => _removeCustomNode(url),
+                        ),
+                      )),
+                ],
+              ],
+            ),
+          ),
+
+          const SizedBox(height: 24),
+
           // Danger Zone
           Card(
             margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -314,12 +427,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 style: TextStyle(fontWeight: FontWeight.bold),
               ),
               SizedBox(height: 12),
-              Text('• Oracle-driven aBFT consensus'),
-              Text('• Proof-of-Burn economics (ETH/BTC → LOS)'),
+              Text('• aBFT consensus with linear stake voting'),
+              Text('• PoW mining distribution (~96.5% public)'),
               Text('• Fixed supply: 21.9 million LOS'),
               Text('• Tor-only mainnet for privacy'),
               Text('• WASM smart contracts (UVM)'),
-              Text('• Quadratic validator staking'),
+              Text('• Linear validator staking (1 CIL = 1 vote)'),
               SizedBox(height: 12),
               Text(
                 'Network Status:',

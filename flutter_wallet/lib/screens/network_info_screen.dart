@@ -197,7 +197,7 @@ class _NetworkInfoScreenState extends State<NetworkInfoScreen> {
             const Divider(),
             _infoRow('Total Supply',
                 '${BlockchainConstants.totalSupply.toString()} LOS'),
-            _infoRow('Remaining (Proof-of-Burn)', '$remainingLos LOS'),
+            _infoRow('Remaining (PoW Mining)', '$remainingLos LOS'),
             _infoRow('Total Burned (USD)',
                 '\$${_supply!['total_burned_usd']?.toString() ?? '0'}'),
           ],

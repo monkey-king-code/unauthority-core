@@ -35,7 +35,7 @@ class _SendScreenState extends State<SendScreen> {
       if (wallet == null) throw Exception('No wallet found');
       losLog('💸 [Send] From: ${wallet['address']}');
 
-      // FIX C11-01: Backend expects LOS in `amount` field.
+      // Backend expects LOS in `amount` field.
       // Support decimal amounts (e.g., 0.5 LOS) — BlockConstructionService
       // converts to CIL with full 10^11 precision.
       final amountStr = _amountController.text.trim();
@@ -44,7 +44,7 @@ class _SendScreenState extends State<SendScreen> {
         throw Exception('Please enter a valid amount greater than 0');
       }
 
-      // FIX H-06: Prevent sending to own address
+      // Prevent sending to own address
       final toAddress = _toController.text.trim();
       losLog('💸 [Send] To: $toAddress, Amount: $amountStr LOS');
       if (toAddress == wallet['address']) {
@@ -82,7 +82,7 @@ class _SendScreenState extends State<SendScreen> {
           amountLosStr: amountStr,
         );
       } else {
-        // SECURITY FIX H-02: Refuse unsigned node-signed transactions on mainnet.
+        // Refuse unsigned node-signed transactions on mainnet.
         // Address-only imports cannot produce valid signatures — node-signed
         // transactions are only acceptable on functional testnet.
         if (apiService.environment == NetworkEnvironment.mainnet) {
@@ -95,7 +95,7 @@ class _SendScreenState extends State<SendScreen> {
         // Address-only import — no keys, let node sign (TESTNET ONLY)
         losLog(
             '💸 [Send] No signing keys — node-signed (functional testnet)...');
-        // FIX: Use amountCil for sub-LOS precision (0.5 LOS = 50_000_000_000 CIL).
+        // Use amountCil for sub-LOS precision (0.5 LOS = 50_000_000_000 CIL).
         final amountCilInt =
             BlockchainConstants.losStringToCil(_amountController.text.trim());
         result = await apiService.sendTransaction(
@@ -209,7 +209,7 @@ class _SendScreenState extends State<SendScreen> {
                     if (value == null || value.trim().isEmpty) {
                       return 'Please enter recipient address';
                     }
-                    // FIX C11-09: Use AddressValidator for consistent
+                    // Use AddressValidator for consistent
                     // hex/Base58 character validation across all screens
                     return AddressValidator.getValidationError(value.trim());
                   },

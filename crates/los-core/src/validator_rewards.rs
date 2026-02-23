@@ -7,7 +7,7 @@
 // Eligibility: 1000 LOS min stake, 95% uptime, 30-day probation passed
 // Lifespan:    Pool lasts ~16-20 years (asymptotic halving)
 //
-// SECURITY FIX C-01: Changed from √stake to linear weight.
+// Changed from √stake to linear weight.
 // √stake incentivizes Sybil attacks (splitting stake into multiple
 // identities yields more total reward weight). Linear is Sybil-neutral.
 // ─────────────────────────────────────────────────────────────────
@@ -16,9 +16,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 use crate::{
-    effective_reward_epoch_secs, MIN_VALIDATOR_STAKE_CIL,
-    REWARD_HALVING_INTERVAL_EPOCHS, REWARD_MIN_UPTIME_PCT, REWARD_PROBATION_EPOCHS,
-    REWARD_RATE_INITIAL_CIL, VALIDATOR_REWARD_POOL_CIL,
+    effective_reward_epoch_secs, MIN_VALIDATOR_STAKE_CIL, REWARD_HALVING_INTERVAL_EPOCHS,
+    REWARD_MIN_UPTIME_PCT, REWARD_PROBATION_EPOCHS, REWARD_RATE_INITIAL_CIL,
+    VALIDATOR_REWARD_POOL_CIL,
 };
 
 /// Per-validator reward tracking state.
@@ -61,7 +61,15 @@ impl ValidatorRewardState {
     /// Uses pure integer math — no floating point.
     pub fn uptime_pct(&self) -> u64 {
         if self.expected_heartbeats == 0 {
-            return 0;
+            // If expected is 0 but we have heartbeats, the validator registered
+            // mid-epoch and expected_heartbeats hasn't been set yet (happens at
+            // epoch boundary via set_expected_heartbeats). The validator IS alive
+            // and sending heartbeats, so report 100% to avoid false 0%.
+            return if self.heartbeats_current_epoch > 0 {
+                100
+            } else {
+                0
+            };
         }
         // Integer: (heartbeats * 100) / expected, capped at 100
         let pct = (self.heartbeats_current_epoch * 100) / self.expected_heartbeats;
@@ -92,7 +100,12 @@ impl ValidatorRewardState {
         if current_epoch < self.join_epoch + REWARD_PROBATION_EPOCHS {
             return false;
         }
-        if self.uptime_pct() < REWARD_MIN_UPTIME_PCT {
+        // Use display_uptime_pct() which returns max(current_epoch, last_epoch).
+        // This prevents validators from appearing ineligible at epoch start
+        // when current heartbeats are still accumulating but last epoch was 100%.
+        // At epoch boundary (when rewards are actually distributed), current uptime
+        // naturally reflects the full epoch's heartbeat count.
+        if self.display_uptime_pct() < REWARD_MIN_UPTIME_PCT {
             return false;
         }
         if self.stake_cil < MIN_VALIDATOR_STAKE_CIL {
@@ -102,7 +115,7 @@ impl ValidatorRewardState {
     }
 
     /// Linear stake weight: returns stake_cil directly (1 CIL = 1 reward weight unit).
-    /// SECURITY FIX C-01: Changed from √stake to linear to prevent Sybil attacks.
+    /// Changed from √stake to linear to prevent Sybil attacks.
     pub fn linear_stake_weight(&self) -> u128 {
         self.stake_cil
     }
@@ -218,7 +231,7 @@ impl ValidatorRewardPool {
 
     /// Check if the current epoch has ended (based on timestamp).
     ///
-    /// DESIGN FIX D-5: Adds a small grace period (5 minutes) to allow for
+    /// DESIGN Adds a small grace period (5 minutes) to allow for
     /// clock skew between validators. Without this, nodes with slightly
     /// different clocks could process epoch transitions at different times,
     /// causing one node to distribute rewards before others have accumulated
@@ -228,7 +241,11 @@ impl ValidatorRewardPool {
     /// For mainnet (30-day epochs), 5 minutes is negligible (0.01% of epoch).
     /// For testnet (2-minute epochs), we use a shorter 5-second grace period.
     pub fn is_epoch_complete(&self, now_secs: u64) -> bool {
-        let grace_secs = if self.epoch_duration_secs <= 300 { 5 } else { 300 };
+        let grace_secs = if self.epoch_duration_secs <= 300 {
+            5
+        } else {
+            300
+        };
         now_secs >= self.epoch_start_timestamp + self.epoch_duration_secs + grace_secs
     }
 
@@ -343,7 +360,7 @@ impl ValidatorRewardPool {
         for (addr, weight) in &eligible {
             // Use u128 multiplication then divide to avoid overflow:
             // reward = (budget * weight) / total_weight
-            // SECURITY FIX C-08: On overflow, use divide-before-multiply fallback
+            // On overflow, use divide-before-multiply fallback
             // instead of returning 0 (which would silently lose validator rewards).
             let reward = match budget.checked_mul(*weight) {
                 Some(prod) => prod / total_weight,
@@ -471,7 +488,7 @@ pub struct RewardPoolSummary {
 
 // ─────────────────────────────────────────────────────────────────
 // Integer square root (Newton's method) — deterministic across platforms
-// NOTE: No longer used for reward weights (C-01 linear fix).
+// NOTE: No longer used for reward weights.
 // Kept for AMM/DEX math (LP token calculation). NOT for voting or rewards.
 // Scoped to crate to prevent external misuse for voting power.
 // ─────────────────────────────────────────────────────────────────
@@ -678,7 +695,7 @@ mod tests {
         let v1 = ValidatorRewardState::new(0, false, 1_000 * CIL_PER_LOS);
         let v2 = ValidatorRewardState::new(0, false, 10_000 * CIL_PER_LOS);
 
-        // SECURITY FIX C-01: Linear weight = stake_cil
+        // Linear weight = stake_cil
         // 10× the stake gives exactly 10× the weight (Sybil-neutral)
         assert_eq!(v1.linear_stake_weight(), 1_000 * CIL_PER_LOS);
         assert_eq!(v2.linear_stake_weight(), 10_000 * CIL_PER_LOS);

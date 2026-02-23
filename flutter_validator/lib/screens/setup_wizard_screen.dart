@@ -1,4 +1,6 @@
 import '../utils/log.dart';
+import 'dart:async' show TimeoutException;
+import 'dart:io' show Platform;
 import '../constants/colors.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -12,7 +14,7 @@ import '../constants/blockchain.dart';
 
 /// Validator Setup Wizard - 3-step flow:
 /// 1. Import Wallet (seed phrase / private key / address)
-/// 2. Validate balance >= 1000 LOS -> Confirm
+/// 2. Validate balance >= 1 LOS -> Confirm (reward eligibility requires >= 1000 LOS)
 /// 3. Start Tor hidden service + los-node binary -> Go to Dashboard
 class SetupWizardScreen extends StatefulWidget {
   final VoidCallback onSetupComplete;
@@ -24,6 +26,9 @@ class SetupWizardScreen extends StatefulWidget {
 }
 
 enum _ImportMethod { seedPhrase, privateKey, walletAddress }
+
+/// Whether the node announces itself via Tor (.onion) or a plain clearnet host.
+enum _HostMode { tor, clearnet }
 
 class _SetupWizardScreenState extends State<SetupWizardScreen> {
   int _currentStep = -1; // -1=network choice, 0=import, 1=confirm, 2=launching
@@ -46,8 +51,14 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
   String _launchStatus = '';
   double _launchProgress = 0.0;
 
-  /// Minimum validator stake in CIL (1000 LOS * cilPerLos)
-  static final int _minStakeCil = 1000 * BlockchainConstants.cilPerLos;
+  // Host mode: Tor hidden service (.onion) or clearnet (IP/domain)
+  _HostMode _hostMode = _HostMode.tor;
+  final _hostAddressController = TextEditingController();
+
+  // PoW Mining
+  bool _enableMining = false;
+  int _miningThreads = 1;
+  final int _maxMiningThreads = Platform.numberOfProcessors.clamp(1, 16);
 
   @override
   void initState() {
@@ -67,110 +78,27 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
   Future<void> _proceedWithNetwork() async {
     final apiService = context.read<ApiService>();
 
-    // Apply selected network — ALWAYS sync config + save preference
-    try {
-      apiService.switchEnvironment(_selectedNetwork);
-      await NetworkPreferenceService.save(_selectedNetwork);
-    } catch (e) {
-      if (!mounted) return;
-      await _showErrorDialog(
-        'Network Unavailable',
-        'Cannot switch to ${_selectedNetwork.name}. Please try again later.',
-      );
-      return;
-    }
-
-    // Test connection for testnet
-    if (_selectedNetwork == NetworkEnvironment.testnet) {
-      try {
-        await apiService.getHealth().timeout(const Duration(seconds: 10));
-      } catch (e) {
-        if (!mounted) return;
-        await _showTestnetErrorDialog();
-        return;
-      }
-    }
+    // Apply selected network — sync config + save preference
+    // NOTE: No connectivity check here. A validator always spawns its own
+    // local node — blocking on a remote health check prevents legitimate
+    // standalone / first-boot use cases where no bootstrap node is reachable yet.
+    apiService.switchEnvironment(_selectedNetwork);
+    await NetworkPreferenceService.save(_selectedNetwork);
 
     // Proceed to import step
     setState(() => _currentStep = 0);
   }
 
-  Future<void> _showTestnetErrorDialog() async {
-    await showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => AlertDialog(
-        title: const Row(
-          children: [
-            Icon(Icons.warning, color: Colors.orange),
-            SizedBox(width: 8),
-            Text('Testnet Unavailable'),
-          ],
-        ),
-        content: const SingleChildScrollView(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                'No testnet nodes are currently online.',
-                style: TextStyle(fontWeight: FontWeight.bold),
-              ),
-              SizedBox(height: 16),
-              Text('To run your own testnet node:'),
-              SizedBox(height: 8),
-              Text('1. Read the documentation:\n   docs/VALIDATOR_GUIDE.md'),
-              SizedBox(height: 8),
-              Text(
-                  '2. Configure testnet host in:\n   flutter_validator/assets/network_config.json'),
-              SizedBox(height: 8),
-              Text('3. Or switch to Mainnet to use the live network.'),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () {
-              Navigator.of(context).pop();
-              setState(() {
-                _selectedNetwork = NetworkEnvironment.mainnet;
-              });
-            },
-            child: const Text('Switch to Mainnet'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Retry'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _showErrorDialog(String title, String message) async {
-    await showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(title),
-        content: Text(message),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('OK'),
-          ),
-        ],
-      ),
-    );
-  }
-
   @override
   void dispose() {
-    // SECURITY FIX F9: Clear sensitive input from controllers on disposal.
+    // Clear sensitive input from controllers on disposal.
     _seedController.clear();
     _privateKeyController.clear();
     _seedController.dispose();
     _privateKeyController.dispose();
     _addressController.dispose();
+    _hostAddressController.clear();
+    _hostAddressController.dispose();
     super.dispose();
   }
 
@@ -222,32 +150,41 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
         throw Exception('Failed to derive wallet address');
       }
 
-      losLog('Checking balance for $walletAddress...');
-      final account = await apiService.getBalance(walletAddress);
+      // Use a short timeout for balance check during setup.
+      // At this point no local node is running → requests go through Tor
+      // SOCKS5 to external .onion peers which can take 45-135s. Use 8s
+      // timeout and proceed with balance=null if unreachable. The balance
+      // will refresh automatically once the bundled node starts.
+      int? balanceCil;
+      bool isGenesisActive = false;
+      losLog('Checking balance for $walletAddress (8s timeout)...');
+      try {
+        final account = await apiService
+            .getBalance(walletAddress)
+            .timeout(const Duration(seconds: 8));
+        balanceCil = account.balance;
+        losLog('💰 Balance fetched: $balanceCil CIL');
 
-      // Compare in CIL integers — no f64 precision loss
-      if (account.balance < _minStakeCil) {
-        throw Exception(
-          'Insufficient balance: ${BlockchainConstants.cilToLosString(account.balance)} LOS.\n'
-          'Minimum validator stake is 1,000 LOS.\n'
-          'Fund your wallet first using the LOS Wallet app.',
-        );
+        // Check genesis status only if balance fetch succeeded (same network)
+        isGenesisActive = await apiService
+            .isActiveGenesisValidator(walletAddress)
+            .timeout(const Duration(seconds: 5), onTimeout: () => false);
+      } on TimeoutException {
+        losLog(
+            '⏳ Balance check timed out (no local node yet). Will refresh after node starts.');
+      } catch (e) {
+        losLog('⚠️ Balance check failed: $e — will retry after node starts.');
       }
-
-      // Check if this address is an active genesis bootstrap validator.
-      // If yes → monitor-only mode (no new node spawn, no new onion).
-      final isGenesisActive =
-          await apiService.isActiveGenesisValidator(walletAddress);
 
       if (!mounted) return;
       setState(() {
         _validatedAddress = walletAddress;
-        _validatedBalanceCil = account.balance;
+        _validatedBalanceCil = balanceCil; // null if unreachable
         _isGenesisMonitor = isGenesisActive;
         _currentStep = 1;
       });
       losLog(
-          '🛡️ [SetupWizardScreen._importAndValidate] Success: address=$walletAddress, balance=${account.balance} CIL');
+          '🛡️ [SetupWizardScreen._importAndValidate] Success: address=$walletAddress, balance=${balanceCil ?? "pending"} CIL');
     } catch (e) {
       losLog('🛡️ [SetupWizardScreen._importAndValidate] Error: $e');
       if (!mounted) return;
@@ -303,97 +240,123 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
         return;
       }
 
-      // ── NORMAL MODE ── Spawn new validator node with Tor hidden service
+      // ── NORMAL MODE ── Spawn new validator node
       await walletService.setMonitorMode(false);
 
       if (!mounted) return;
-      setState(() {
-        _launchStatus = 'Initializing Tor hidden service...';
-      });
-
       final nodeService = context.read<NodeProcessService>();
       final torService = context.read<TorService>();
 
-      // Step A: Start Tor with hidden service
-      if (!mounted) return;
-      setState(() {
-        _launchStatus =
-            'Starting Tor hidden service...\nThis may take up to 2 minutes on first run.';
-        _launchProgress = 0.2;
-      });
-
-      // Find an available port (avoid conflict with bootstrap nodes on 3030-3033)
+      // Find an available port (avoid conflict with bootstrap nodes)
       final nodePort =
           await NodeProcessService.findAvailablePort(preferred: 3035);
       losLog('📡 Selected port $nodePort for validator node');
 
-      final onionAddress = await torService.startWithHiddenService(
-        localPort: nodePort,
-        onionPort: 80,
-      );
+      // Step A: Configure node host mode — Tor (.onion) or Clearnet (IP/domain)
+      String? onionAddress;
+      String? hostAddress;
 
-      if (!mounted) return;
-      if (onionAddress == null) {
-        // MAINNET PARITY: Tor hidden service is MANDATORY.
-        // Without .onion, the validator cannot be reached by peers
-        // and cannot participate in consensus. Hard failure.
-        throw Exception(
-          'Tor hidden service failed to start.\n'
-          'A .onion address is required for validator operation.\n'
-          'Check Tor installation and retry.',
+      if (_hostMode == _HostMode.clearnet) {
+        // ── CLEARNET MODE ──
+        // User provides a public IP:port or domain. los-node announces this
+        // to peers via LOS_HOST_ADDRESS. No Tor hidden service needed.
+        hostAddress = _hostAddressController.text.trim();
+        if (hostAddress.isEmpty) {
+          throw Exception(
+              'Please enter your host address (e.g. 1.2.3.4:3035 or example.com:3035).');
+        }
+        if (!mounted) return;
+        setState(() {
+          _launchStatus = 'Clearnet host: $hostAddress\nStarting node...';
+          _launchProgress = 0.4;
+        });
+        losLog('🌐 Clearnet mode: host=$hostAddress');
+      } else {
+        // ── TOR MODE ──
+        // Start Tor hidden service to obtain a .onion address.
+        if (!mounted) return;
+        setState(() {
+          _launchStatus =
+              'Starting Tor hidden service...\nThis may take up to 2 minutes on first run.';
+          _launchProgress = 0.2;
+        });
+
+        onionAddress = await torService.startWithHiddenService(
+          localPort: nodePort,
+          onionPort: 80,
         );
+
+        if (!mounted) return;
+        if (onionAddress == null) {
+          throw Exception(
+            'Tor hidden service failed to start.\n'
+            'Check Tor installation, or switch to Clearnet mode.',
+          );
+        }
+
+        // CRITICAL: Exclude own .onion from API failover peer list.
+        // Spec: flutter_validator MUST NOT use its own onion for API.
+        final apiService = context.read<ApiService>();
+        apiService.setExcludedOnion('http://$onionAddress');
+
+        if (!mounted) return;
+        setState(() {
+          _launchStatus = 'Tor ready! Starting validator node...';
+          _launchProgress = 0.5;
+        });
+        losLog('🧅 Tor mode: onion=$onionAddress');
       }
 
-      // CRITICAL: Exclude own .onion from API failover peer list.
-      // Spec: "flutter_validator MUST NOT use its own local onion
-      // address for API consumption".
-      final apiService = context.read<ApiService>();
-      apiService.setExcludedOnion('http://$onionAddress');
-
-      setState(() {
-        _launchStatus = 'Tor ready!\nStarting validator node...';
-        _launchProgress = 0.5;
-      });
-
-      // Step B: Start los-node
+      // Step B: Load bootstrap P2P addresses
       if (!mounted) return;
       setState(() {
+        _launchStatus = 'Starting validator node...';
         _launchProgress = 0.6;
       });
 
-      // Load bootstrap nodes so los-node can discover peers on the network.
-      // MAINNET PARITY: ALWAYS use .onion P2P addresses.
-      // No localhost/127.0.0.1 — Tor onion routing is mandatory.
       await NetworkConfig.load();
       const networkMode =
-          String.fromEnvironment('NETWORK', defaultValue: 'mainnet');
+          String.fromEnvironment('NETWORK', defaultValue: 'testnet');
       final nodes = networkMode == 'mainnet'
           ? NetworkConfig.mainnetNodes
           : NetworkConfig.testnetNodes;
-      final bootstrapAddresses = nodes.map((n) => n.p2pAddress).join(',');
-      losLog('\ud83c\udf10 Bootstrap nodes (.onion): $bootstrapAddresses');
+      final bootstrapAddresses = nodes.map((n) {
+        // Testnet: prefer clearnet localP2pAddress (127.0.0.1:7041-7044)
+        // Mainnet: always use .onion P2P (Tor mandatory)
+        final clearnet = networkMode != 'mainnet' ? n.localP2pAddress : null;
+        return clearnet ?? n.p2pAddress;
+      }).join(',');
+      losLog('🌐 Bootstrap nodes (P2P): $bootstrapAddresses');
 
       // P2P port: auto-derived from API port + 1000 (matches los-node)
       final p2pPort = nodePort + 1000;
       losLog('📡 P2P port: $p2pPort');
 
-      // Tor SOCKS5 proxy: MANDATORY for dialing .onion bootstrap peers.
-      // MAINNET PARITY: Without SOCKS5, los-node cannot reach any peer.
-      if (!torService.isRunning) {
-        throw Exception(
-          'Tor SOCKS5 proxy is not running.\n'
-          'Cannot connect to .onion bootstrap peers without Tor.',
-        );
+      // Tor SOCKS5: required for Tor mode, optional for clearnet mode.
+      // If Tor is running in clearnet mode, pass SOCKS5 so los-node can
+      // optionally dial .onion peers that announce themselves via Tor.
+      String? torSocks5;
+      if (_hostMode == _HostMode.tor) {
+        if (!torService.isRunning) {
+          throw Exception(
+            'Tor SOCKS5 proxy is not running.\n'
+            'Cannot start Tor hidden service without Tor.',
+          );
+        }
+        torSocks5 = '127.0.0.1:${torService.activeSocksPort}';
+        losLog('🧅 Tor SOCKS5: $torSocks5');
+      } else if (torService.isRunning) {
+        // Clearnet mode — pass SOCKS5 if Tor happens to be available
+        torSocks5 = '127.0.0.1:${torService.activeSocksPort}';
+        losLog('🧅 Tor SOCKS5 (optional, clearnet mode): $torSocks5');
       }
-      final torSocks5 = '127.0.0.1:${torService.activeSocksPort}';
-      losLog('🧅 Tor SOCKS5: $torSocks5');
 
       // Retrieve mnemonic so los-node can derive the same Dilithium5 keypair
       final walletWithMnemonic =
           await walletService.getCurrentWallet(includeMnemonic: true);
       final mnemonic = walletWithMnemonic?['mnemonic'];
 
-      // If node is already running (e.g. survived hot-reload or previous session),
+      // If node is already running (survived hot-reload or previous session),
       // skip starting and proceed directly to registration.
       final bool nodeAlreadyRunning = nodeService.isRunning;
       int activePort = nodePort;
@@ -406,11 +369,14 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
         final started = await nodeService.start(
           port: nodePort,
           onionAddress: onionAddress,
+          hostAddress: hostAddress,
           bootstrapNodes:
               bootstrapAddresses.isNotEmpty ? bootstrapAddresses : null,
           seedPhrase: mnemonic,
           p2pPort: p2pPort,
           torSocks5: torSocks5,
+          enableMining: _enableMining,
+          miningThreads: _miningThreads,
         );
 
         if (!started) {
@@ -628,8 +594,7 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
               style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
               textAlign: TextAlign.center),
           const SizedBox(height: 8),
-          Text(
-              'Import your wallet to register as a validator node.\nMinimum stake: 1,000 LOS',
+          Text('Import your wallet to register as a validator node.',
               style: TextStyle(fontSize: 14, color: Colors.grey[400]),
               textAlign: TextAlign.center),
           const SizedBox(height: 32),
@@ -672,8 +637,8 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
                 SizedBox(width: 8),
                 Expanded(
                     child: Text(
-                        'Your wallet needs at least 1,000 LOS to register as a validator. '
-                        'Use the LOS Wallet app to send/receive funds.',
+                        'Import your wallet to start the validator node. '
+                        'Use the LOS Wallet app to manage your funds.',
                         style: TextStyle(fontSize: 12, color: Colors.blue))),
               ])),
         ],
@@ -704,10 +669,11 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
                     _infoRow('Address',
                         '${_validatedAddress!.substring(0, 12)}...${_validatedAddress!.substring(_validatedAddress!.length - 8)}'),
                     const Divider(),
-                    _infoRow('Balance',
-                        '${BlockchainConstants.cilToLosString(_validatedBalanceCil!)} LOS'),
-                    const Divider(),
-                    _infoRow('Min Stake', '1,000 LOS'),
+                    _infoRow(
+                        'Balance',
+                        _validatedBalanceCil != null
+                            ? '${BlockchainConstants.cilToLosString(_validatedBalanceCil!)} LOS'
+                            : 'Pending (will refresh after node starts)'),
                     const Divider(),
                     _infoRow('Status', 'Eligible'),
                   ]))),
@@ -746,7 +712,12 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
                               TextStyle(fontSize: 13, color: Colors.grey[300])),
                     ])),
           ] else ...[
-            // Normal validator — full node spawn flow
+            // Normal validator — choose host mode then spawn node
+            const SizedBox(height: 8),
+            _buildHostModeSelector(),
+            const SizedBox(height: 8),
+            _buildMiningSelector(),
+            const SizedBox(height: 16),
             Card(
                 color: ValidatorColors.cardBg.withValues(alpha: 0.6),
                 child: Padding(
@@ -758,8 +729,13 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
                               style: TextStyle(
                                   fontWeight: FontWeight.bold, fontSize: 14)),
                           const SizedBox(height: 8),
-                          _stepItem(
-                              '1', 'Setup Tor hidden service (.onion address)'),
+                          if (_hostMode == _HostMode.tor) ...[
+                            _stepItem('1',
+                                'Setup Tor hidden service (.onion address)'),
+                          ] else ...[
+                            _stepItem(
+                                '1', 'Announce clearnet host to network peers'),
+                          ],
                           _stepItem('2', 'Start los-node validator binary'),
                           _stepItem('3', 'Sync blockchain from network'),
                           _stepItem('4', 'Register as active validator'),
@@ -794,6 +770,99 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
               child: const Text('Back to wallet import')),
         ],
       ),
+    );
+  }
+
+  /// Host mode selector shown in the confirmation step.
+  /// Lets the user choose between Tor (.onion) and clearnet (IP/domain).
+  Widget _buildHostModeSelector() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const Text('Node Host Mode',
+            style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+        const SizedBox(height: 8),
+        // Tor option
+        Card(
+          color: _hostMode == _HostMode.tor
+              ? ValidatorColors.accent.withValues(alpha: 0.15)
+              : null,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(8),
+            side: BorderSide(
+              color: _hostMode == _HostMode.tor
+                  ? ValidatorColors.accent
+                  : Colors.transparent,
+              width: 1.5,
+            ),
+          ),
+          child: ListTile(
+            leading: Icon(Icons.tornado,
+                color: _hostMode == _HostMode.tor
+                    ? ValidatorColors.accent
+                    : Colors.grey),
+            title: const Text('Tor Hidden Service (.onion)'),
+            subtitle: Text('Private. Requires Tor.',
+                style: TextStyle(fontSize: 12, color: Colors.grey[400])),
+            trailing: _hostMode == _HostMode.tor
+                ? const Icon(Icons.check_circle, color: ValidatorColors.accent)
+                : null,
+            onTap: () => setState(() {
+              _hostMode = _HostMode.tor;
+              _error = null;
+            }),
+          ),
+        ),
+        const SizedBox(height: 8),
+        // Clearnet option
+        Card(
+          color: _hostMode == _HostMode.clearnet
+              ? Colors.blue.withValues(alpha: 0.15)
+              : null,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(8),
+            side: BorderSide(
+              color: _hostMode == _HostMode.clearnet
+                  ? Colors.blue
+                  : Colors.transparent,
+              width: 1.5,
+            ),
+          ),
+          child: ListTile(
+            leading: Icon(Icons.public,
+                color: _hostMode == _HostMode.clearnet
+                    ? Colors.blue
+                    : Colors.grey),
+            title: const Text('Clearnet (IP / Domain)'),
+            subtitle: Text('Public IP or domain. No Tor required.',
+                style: TextStyle(fontSize: 12, color: Colors.grey[400])),
+            trailing: _hostMode == _HostMode.clearnet
+                ? const Icon(Icons.check_circle, color: Colors.blue)
+                : null,
+            onTap: () => setState(() {
+              _hostMode = _HostMode.clearnet;
+              _error = null;
+            }),
+          ),
+        ),
+        // Clearnet — show address input field
+        if (_hostMode == _HostMode.clearnet) ...[
+          const SizedBox(height: 12),
+          TextField(
+            controller: _hostAddressController,
+            decoration: InputDecoration(
+              labelText: 'Host Address',
+              hintText: '203.0.113.10:3035  or  mynode.example.com:3035',
+              border:
+                  OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+              prefixIcon: const Icon(Icons.dns),
+              helperText:
+                  'Public IP:port or domain:port where peers can reach you.',
+              helperStyle: const TextStyle(fontSize: 11),
+            ),
+          ),
+        ],
+      ],
     );
   }
 
@@ -964,5 +1033,101 @@ class _SetupWizardScreenState extends State<SetupWizardScreen> {
           Text(label, style: TextStyle(color: Colors.grey[400])),
           Text(value, style: const TextStyle(fontWeight: FontWeight.bold)),
         ]));
+  }
+
+  /// Mining selector shown in the confirmation step.
+  /// Lets the user enable PoW mining and choose thread count.
+  Widget _buildMiningSelector() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const Text('PoW Mining',
+            style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+        const SizedBox(height: 8),
+        Card(
+          color: _enableMining ? Colors.orange.withValues(alpha: 0.12) : null,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(8),
+            side: BorderSide(
+              color: _enableMining ? Colors.orange : Colors.transparent,
+              width: 1.5,
+            ),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: Column(
+              children: [
+                Row(
+                  children: [
+                    Icon(Icons.hardware,
+                        color: _enableMining ? Colors.orange : Colors.grey),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text('Enable PoW Mining',
+                              style: TextStyle(fontWeight: FontWeight.w600)),
+                          Text(
+                            'Earn PoW mining rewards by running a full node. '
+                            'Reward halves periodically.',
+                            style: TextStyle(
+                                fontSize: 11, color: Colors.grey[400]),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Switch(
+                      value: _enableMining,
+                      onChanged: (v) => setState(() => _enableMining = v),
+                      activeThumbColor: Colors.orange,
+                    ),
+                  ],
+                ),
+                if (_enableMining) ...[
+                  const Divider(),
+                  Row(
+                    children: [
+                      const Icon(Icons.memory, size: 18, color: Colors.orange),
+                      const SizedBox(width: 8),
+                      const Text('Mining Threads',
+                          style: TextStyle(fontSize: 13)),
+                      const Spacer(),
+                      Text(
+                        '$_miningThreads',
+                        style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 16,
+                            color: Colors.orange),
+                      ),
+                    ],
+                  ),
+                  Slider(
+                    value: _miningThreads.toDouble(),
+                    min: 1,
+                    max: _maxMiningThreads.toDouble(),
+                    divisions: (_maxMiningThreads - 1).clamp(1, 15),
+                    label:
+                        '$_miningThreads thread${_miningThreads > 1 ? 's' : ''}',
+                    activeColor: Colors.orange,
+                    onChanged: (v) =>
+                        setState(() => _miningThreads = v.round()),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 4),
+                    child: Text(
+                      'Using $_miningThreads thread${_miningThreads > 1 ? 's' : ''} '
+                      'for SHA3-256 hash grinding.',
+                      style: TextStyle(fontSize: 11, color: Colors.grey[400]),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
   }
 }

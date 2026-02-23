@@ -153,7 +153,7 @@ class BlockInfo {
 
   factory BlockInfo.fromJson(Map<String, dynamic> json) {
     return BlockInfo(
-      // FIX C11-05: Type-safe int parsing
+      // Type-safe int parsing
       height: _parseIntField(json['height']),
       hash: (json['hash'] ?? '').toString(),
       timestamp: _parseIntField(json['timestamp']),
@@ -183,7 +183,7 @@ class ValidatorInfo {
   });
 
   factory ValidatorInfo.fromJson(Map<String, dynamic> json) {
-    // FIX C11-04: Type-safe int parsing for all numeric fields
+    // Type-safe int parsing for all numeric fields
     return ValidatorInfo(
       address: (json['address'] ?? '').toString(),
       stake: _parseIntField(json['stake']),
@@ -198,12 +198,12 @@ class ValidatorInfo {
   }
 
   /// Backend already sends stake as integer LOS (balance / CIL_PER_LOS).
-  /// FIX C-02: Do NOT divide again — value is already in LOS.
+  /// Do NOT divide again — value is already in LOS.
   /// Returns display string without f64 conversion.
   String get stakeDisplay => '$stake';
 
   /// Linear voting power: stake in LOS (1 LOS = 1 vote).
-  /// SECURITY FIX C-01: Changed to linear (Sybil-neutral).
+  /// Changed to linear (Sybil-neutral).
   /// Matches backend: calculate_voting_power() returns stake directly.
   int get votingPowerInt {
     if (stake <= 0) return 0;

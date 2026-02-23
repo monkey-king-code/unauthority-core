@@ -224,7 +224,7 @@ pub fn calculate_escalation_multiplier(current_violations: u32, base_factor: u32
 // BURN LIMIT PER BLOCK
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-/// Maximum CIL that can be obtained via PoB in single block (1000 LOS as per whitepaper)
+/// Maximum CIL that can be burned in a single block (1000 LOS as per whitepaper)
 /// 1 LOS = 100_000_000_000 CIL (10^11)
 pub const BURN_LIMIT_PER_BLOCK_CIL: u128 = 1_000 * 100_000_000_000; // 1000 LOS max per block
 
@@ -276,16 +276,7 @@ impl BlockBurnState {
         ((used * 10_000) / BURN_LIMIT_PER_BLOCK_CIL) as u32
     }
 
-    /// Get fill percentage (0-100) — DEPRECATED: use get_capacity_percentage_bps() instead
-    /// Kept for backward compatibility during migration. Will be removed before mainnet.
-    /// MAINNET SAFETY: Excluded from mainnet builds (uses f64)
-    #[cfg(not(feature = "mainnet"))]
-    #[deprecated(note = "Uses f64. Migrate to get_capacity_percentage_bps() for mainnet.")]
-    pub fn get_capacity_percentage(&self) -> f64 {
-        let used = (BURN_LIMIT_PER_BLOCK_CIL - self.remaining_capacity) as f64;
-        let total = BURN_LIMIT_PER_BLOCK_CIL as f64;
-        (used / total) * 100.0
-    }
+    // REMOVED: get_capacity_percentage() — used f64, replaced by get_capacity_percentage_bps()
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

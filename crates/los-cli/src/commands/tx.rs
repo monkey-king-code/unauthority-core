@@ -77,7 +77,7 @@ async fn send_tx(
     }
     let account_data: serde_json::Value = account_resp.json().await?;
     let previous = account_data["head"].as_str().unwrap_or("0").to_string();
-    // Use string-based balance to avoid f64 precision loss (C-02 fix)
+    // Use string-based balance to avoid f64 precision loss
     let balance_cil: u128 = account_data["balance_cil_str"]
         .as_str()
         .and_then(|s| s.parse().ok())

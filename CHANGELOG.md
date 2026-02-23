@@ -6,6 +6,27 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [2.0.0] — 2026-02-24
+
+### Changed
+
+- **Major version bump to 2.0.0** — System architecture redesign. Consensus, networking, mining, and reward systems fully stabilized.
+- **Version bumped to 2.0.0** across all crates, Flutter apps, docs, configs, badges, and build scripts.
+
+### Fixed
+
+- **Validator uptime tracking** — `is_eligible()` now uses `display_uptime_pct()` (max of current + last epoch) instead of raw `uptime_pct()`, preventing false "0% uptime" at epoch boundaries.
+- **Mid-epoch registration uptime** — `uptime_pct()` returns 100% when `expected_heartbeats == 0` but heartbeats recorded (newly registered validator).
+- **`/reward-info` API consistency** — Shows `display_uptime_pct()` instead of raw `uptime_pct()`.
+
+### Security
+
+- **Removed unsafe `from_utf8_unchecked`** — Replaced with safe `from_utf8().unwrap_or_default()` in `dex_amm.rs` and `usp01_token.rs`.
+- **Removed deprecated f64 function** — `get_capacity_percentage()` removed from `fee_scaling.rs`.
+- **Mainnet safety audit passed** — 0 TODO, 0 unimplemented!(), 0 production unwrap(), 0 f64 in consensus, 0 panic in production paths.
+
+---
+
 ## [1.0.13] — 2026-02-19
 
 ### Fixed
@@ -88,7 +109,7 @@ The first production release of the Unauthority blockchain, running on the live 
 - **aBFT consensus** with asynchronous Byzantine Fault Tolerance.
 - **Block-lattice (DAG)** architecture for parallel transaction processing.
 - **Post-quantum cryptography** using Dilithium5 for all signing operations.
-- **SHA-3 (Keccak-256)** for all hashing operations.
+- **SHA-3 (NIST FIPS 202)** for all hashing operations.
 - **USP-01 token standard** for native fungible tokens and wrapped assets.
 - **DEX AMM smart contracts** via WASM Virtual Machine (UVM).
 - **46 REST API endpoints** covering accounts, blocks, transactions, validators, contracts, tokens, and DEX.
@@ -96,8 +117,8 @@ The first production release of the Unauthority blockchain, running on the live 
 - **Validator reward system**: 500,000 LOS non-inflationary pool, 5,000 LOS/epoch with halving every 48 epochs.
 - **Linear voting** (1 LOS = 1 vote) for Sybil-neutral governance.
 - **Flat fee model** — BASE_FEE_CIL per transaction.
-- **Proof-of-Burn** mechanism for deflationary pressure.
-- **Oracle price feed** contract for on-chain price data.
+- **PoW Mining** for fair public token distribution (~96.5% supply).
+- **Price feed** support for DEX smart contracts.
 - **Flutter Wallet** app (macOS) for sending, receiving, and burning LOS.
 - **Flutter Validator Dashboard** (macOS) for node monitoring and management.
 - **Tor integration** — all nodes auto-generate .onion addresses on startup.
@@ -215,6 +236,7 @@ Pre-mainnet testing release deployed on the live Tor network.
 
 ---
 
+[2.0.0]: https://github.com/monkey-king-code/unauthority-core/releases/tag/v2.0.0
 [1.0.13]: https://github.com/monkey-king-code/unauthority-core/releases/tag/v1.0.13
 [1.0.12]: https://github.com/monkey-king-code/unauthority-core/releases/tag/v1.0.12
 [1.0.11]: https://github.com/monkey-king-code/unauthority-core/releases/tag/v1.0.11

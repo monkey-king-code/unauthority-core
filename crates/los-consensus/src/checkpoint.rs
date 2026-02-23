@@ -58,7 +58,7 @@ pub struct FinalityCheckpoint {
     /// that predate the `signatures` field.
     pub signature_count: u32,
 
-    /// SECURITY FIX C-14: Actual validator signatures.
+    /// Actual validator signatures.
     /// Replaces the trust-based `signature_count` with cryptographic proof.
     /// Old checkpoints deserialize with an empty vec (backward-compatible).
     #[serde(default)]
@@ -77,8 +77,10 @@ impl FinalityCheckpoint {
         state_root: String,
         signatures: Vec<CheckpointSignature>,
     ) -> Self {
-        let unique_signers: HashSet<&str> =
-            signatures.iter().map(|s| s.validator_address.as_str()).collect();
+        let unique_signers: HashSet<&str> = signatures
+            .iter()
+            .map(|s| s.validator_address.as_str())
+            .collect();
         let signature_count = unique_signers.len() as u32;
 
         Self {
@@ -116,15 +118,15 @@ impl FinalityCheckpoint {
 
     /// Verify checkpoint has enough signatures (67% quorum).
     ///
-    /// SECURITY FIX C-14: When `signatures` is non-empty, the count is derived
+    /// When `signatures` is non-empty, the count is derived
     /// from unique signer addresses — ignoring the self-reported `signature_count`.
     /// For legacy checkpoints (empty `signatures`), falls back to `signature_count`.
     ///
-    /// SECURITY FIX: Uses integer ceiling division instead of f64 multiplication.
+    /// Uses integer ceiling division instead of f64 multiplication.
     /// f64 rounding can produce different results across platforms, which would
     /// cause chain splits when validators disagree on finality quorum.
     ///
-    /// DESIGN FIX D-10: Uses standard BFT quorum formula 2f+1 where f = (n-1)/3.
+    /// DESIGN Uses standard BFT quorum formula 2f+1 where f = (n-1)/3.
     /// This is the mathematically correct Byzantine quorum, replacing the
     /// approximation ceil(67% * n) which can differ by 1 at certain n values.
     /// For n=1, requires 1 sig (bootstrap). For n=4, f=1 → requires 3.
@@ -463,7 +465,7 @@ pub struct CheckpointStats {
     pub checkpoint_interval: u64,
 }
 
-/// DESIGN FIX D-3: Pending checkpoint accumulating signatures from peers.
+/// DESIGN Pending checkpoint accumulating signatures from peers.
 ///
 /// When a node creates a checkpoint, it becomes a "pending" checkpoint with
 /// 1 signature (the proposer's). As other validators sign the same checkpoint
@@ -492,12 +494,20 @@ impl PendingCheckpoint {
     /// Does NOT verify the signature cryptographically — caller must verify first.
     pub fn add_signature(&mut self, sig: CheckpointSignature) -> bool {
         // Dedup by validator address
-        if self.checkpoint.signatures.iter().any(|s| s.validator_address == sig.validator_address) {
+        if self
+            .checkpoint
+            .signatures
+            .iter()
+            .any(|s| s.validator_address == sig.validator_address)
+        {
             return false;
         }
         self.checkpoint.signatures.push(sig);
         // Update derived signature_count
-        let unique: HashSet<&str> = self.checkpoint.signatures.iter()
+        let unique: HashSet<&str> = self
+            .checkpoint
+            .signatures
+            .iter()
             .map(|s| s.validator_address.as_str())
             .collect();
         self.checkpoint.signature_count = unique.len() as u32;

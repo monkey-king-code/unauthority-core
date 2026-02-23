@@ -56,14 +56,16 @@ class ApiService {
   // via NetworkConfig. NEVER hardcode .onion addresses here.
   // Use: scripts/update_network_config.sh to update addresses.
 
-  /// Default timeout for API calls
-  static const Duration _defaultTimeout = Duration(seconds: 30);
+  /// Default timeout for clearnet API calls.
+  /// 8s is generous for clearnet (localhost responds <100ms, remote <2s).
+  /// Previously 30s — caused 30s+ waits when a clearnet node was down.
+  static const Duration _defaultTimeout = Duration(seconds: 8);
 
   /// Longer timeout for Tor connections (45s — .onion routing can be slow on first circuit)
   static const Duration _torTimeout = Duration(seconds: 45);
 
   /// Timeout for latency probes (short — just checking reachability)
-  static const Duration _probeTimeout = Duration(seconds: 15);
+  static const Duration _probeTimeout = Duration(seconds: 5);
 
   /// Tor-specific probe timeout (Tor circuits need more time)
   static const Duration _torProbeTimeout = Duration(seconds: 30);
@@ -86,6 +88,11 @@ class ApiService {
   // Initialize with safe default to prevent LateInitializationError.
   // _initializeClient() replaces with Tor client asynchronously when needed.
   http.Client _client = http.Client();
+
+  /// Direct HTTP client (no SOCKS5 proxy) for clearnet URLs.
+  /// Clearnet requests through SOCKS5 fail with SocksClientConnectionCommandFailedException.
+  final http.Client _directClient = http.Client();
+
   NetworkEnvironment environment;
   final TorService _torService;
 
@@ -162,29 +169,54 @@ class ApiService {
 
   /// Load all bootstrap URLs for the given environment.
   /// Filters out the validator's own .onion address if excluded.
-  /// SECURITY FIX M-06: On mainnet, only .onion URLs are permitted.
+  /// On mainnet, only .onion URLs are permitted.
   void _loadBootstrapUrls(NetworkEnvironment env) {
     final nodes = env == NetworkEnvironment.testnet
         ? NetworkConfig.testnetNodes
         : NetworkConfig.mainnetNodes;
     _bootstrapUrls = nodes
-        .map((n) => n.restUrl)
+        .expand((n) => n.allRestUrls)
         .where((url) => url != _excludedOnionUrl)
         .where((url) {
-      // SECURITY: Mainnet requires .onion-only connections (Tor network)
-      if (env == NetworkEnvironment.mainnet && !url.contains('.onion')) {
-        losLog('🚫 Rejected non-.onion URL for mainnet: $url');
-        return false;
-      }
-      return true;
-    }).toList();
+          // SECURITY: Mainnet requires .onion-only connections (Tor network)
+          if (env == NetworkEnvironment.mainnet && !url.contains('.onion')) {
+            losLog('🚫 Rejected non-.onion URL for mainnet: $url');
+            return false;
+          }
+          return true;
+        })
+        .toSet()
+        .toList();
+    // Sort clearnet URLs first, .onion last.
+    // Prevents wasting 30-45s per .onion timeout when clearnet is available.
+    // Critical for testnet dev where .onion addresses may not exist on Tor.
+    _bootstrapUrls.sort((a, b) {
+      final aIsOnion = a.contains('.onion') ? 1 : 0;
+      final bIsOnion = b.contains('.onion') ? 1 : 0;
+      return aIsOnion.compareTo(bIsOnion);
+    });
     _currentNodeIndex = 0;
   }
 
-  /// Async initialization: load saved peers, prepend to bootstrap list,
+  /// Async initialization: load custom + saved peers, prepend to bootstrap list,
   /// then run initial latency probes to select the best node.
+  /// Priority: custom peers > saved peers > bootstrap nodes.
   /// Caps saved peers to _maxSavedPeers to avoid 200+ dead .onion bloat.
   Future<void> _loadSavedPeers() async {
+    // 1. Load user-added custom peers (highest priority)
+    final customPeers = await PeerDiscoveryService.loadCustomPeers();
+    if (customPeers.isNotEmpty) {
+      final newCustom = customPeers
+          .where((p) => p != _excludedOnionUrl && !_bootstrapUrls.contains(p))
+          .toList();
+      if (newCustom.isNotEmpty) {
+        _bootstrapUrls = [...newCustom, ..._bootstrapUrls];
+        losLog('🎯 PeerDiscovery: added ${newCustom.length} custom peer(s) '
+            '(total: ${_bootstrapUrls.length} endpoints)');
+      }
+    }
+
+    // 2. Load auto-discovered saved peers (medium priority)
     final savedPeers = await PeerDiscoveryService.loadSavedPeers();
     if (savedPeers.isNotEmpty) {
       // Collect hostnames already present in bootstrap list to prevent
@@ -199,7 +231,7 @@ class ApiService {
           .where((p) {
             if (p == _excludedOnionUrl) return false;
             if (_bootstrapUrls.contains(p)) return false;
-            // Hostname dedup: skip if same .onion hostname already known
+            // Hostname dedup: skip if same hostname already known
             final host = Uri.tryParse(p)?.host ?? '';
             if (host.isNotEmpty && knownHostnames.contains(host)) return false;
             return true;
@@ -212,6 +244,64 @@ class ApiService {
             '(total: ${_bootstrapUrls.length} endpoints)');
       }
     }
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  //  ADD CUSTOM NODE — For Bootstrap Independence
+  // ══════════════════════════════════════════════════════════════════
+
+  /// Add a custom node URL provided by the user.
+  /// Saves to persistent storage and immediately adds to the failover list.
+  /// If all bootstrap nodes are dead, a user can add any known validator
+  /// URL to join the network — this is the key to blockchain survival
+  /// without the original bootstrap nodes.
+  ///
+  /// Returns a status message for UI display.
+  Future<String> addCustomNode(String rawUrl) async {
+    final added = await PeerDiscoveryService.addCustomPeer(rawUrl);
+    if (!added) {
+      return 'Invalid URL or already added.';
+    }
+
+    // Normalize URL (same logic as PeerDiscoveryService)
+    String url = rawUrl.trim();
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      url = 'http://$url';
+    }
+
+    // Immediately inject into live bootstrap list (highest priority)
+    if (!_bootstrapUrls.contains(url)) {
+      _bootstrapUrls = [url, ..._bootstrapUrls];
+      _currentNodeIndex = 0; // Reset to try custom peer first
+    }
+
+    // Try to connect to it immediately
+    try {
+      final client = _clientFor(url);
+      final timeout = url.contains('.onion') ? _torProbeTimeout : _probeTimeout;
+      final response =
+          await client.get(Uri.parse('$url/health')).timeout(timeout);
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        baseUrl = url;
+        _getHealth(url).recordSuccess(0);
+        return 'Connected to $url successfully!';
+      } else {
+        return 'Node added but returned status ${response.statusCode}. Will retry during failover.';
+      }
+    } catch (e) {
+      return 'Node saved for failover. Could not connect now: ${e.toString().split('\n').first}';
+    }
+  }
+
+  /// Get the list of user-added custom nodes (for UI display).
+  Future<List<String>> getCustomNodes() async {
+    return PeerDiscoveryService.loadCustomPeers();
+  }
+
+  /// Remove a custom node.
+  Future<void> removeCustomNode(String url) async {
+    await PeerDiscoveryService.removeCustomPeer(url);
+    _bootstrapUrls.remove(url);
   }
 
   String _getBaseUrl(NetworkEnvironment env) {
@@ -247,8 +337,9 @@ class ApiService {
       final timeout =
           baseUrl.contains('.onion') ? _torProbeTimeout : _probeTimeout;
       final sw = Stopwatch()..start();
-      final response =
-          await _client.get(Uri.parse('$baseUrl/health')).timeout(timeout);
+      final response = await _clientFor(baseUrl)
+          .get(Uri.parse('$baseUrl/health'))
+          .timeout(timeout);
       sw.stop();
       final rtt = sw.elapsedMilliseconds;
 
@@ -293,7 +384,7 @@ class ApiService {
 
     final results = <String, int>{};
 
-    // FIX I-01: Limit concurrent probes to avoid saturating SOCKS5 proxy.
+    // Limit concurrent probes to avoid saturating SOCKS5 proxy.
     const maxConcurrent = 2;
     final nodesToProbe = _bootstrapUrls.where((url) {
       final health = _nodeHealthMap[url];
@@ -312,8 +403,9 @@ class ApiService {
           final timeout =
               url.contains('.onion') ? _torProbeTimeout : _probeTimeout;
           final sw = Stopwatch()..start();
-          final response =
-              await _client.get(Uri.parse('$url/health')).timeout(timeout);
+          final response = await _clientFor(url)
+              .get(Uri.parse('$url/health'))
+              .timeout(timeout);
           sw.stop();
 
           if (response.statusCode >= 200 && response.statusCode < 300) {
@@ -363,6 +455,15 @@ class ApiService {
     return _nodeHealthMap.putIfAbsent(url, () => _NodeHealth());
   }
 
+  /// Select the appropriate HTTP client for a given URL.
+  /// .onion URLs → _client (Tor SOCKS5 proxy)
+  /// Clearnet URLs → _directClient (plain HTTP, no proxy)
+  /// Sending clearnet requests through SOCKS5 causes
+  /// SocksClientConnectionCommandFailedException.
+  http.Client _clientFor(String url) {
+    return url.contains('.onion') ? _client : _directClient;
+  }
+
   // ══════════════════════════════════════════════════════════════════
   //  FAILOVER
   // ══════════════════════════════════════════════════════════════════
@@ -372,21 +473,30 @@ class ApiService {
   bool _switchToNextNode() {
     if (_bootstrapUrls.length <= 1) return false;
     final startIndex = _currentNodeIndex;
-    do {
-      _currentNodeIndex = (_currentNodeIndex + 1) % _bootstrapUrls.length;
-      final candidate = _bootstrapUrls[_currentNodeIndex];
-      // Skip .onion URLs if we don't have a Tor client
-      if (!_hasTor && candidate.contains('.onion')) continue;
-      // Skip nodes in cooldown (recently failed, exponential backoff)
-      if (_getHealth(candidate).isInCooldown) continue;
-      if (candidate != baseUrl) {
-        baseUrl = candidate;
-        losLog(
-            '🔄 Failover: switched to node ${_currentNodeIndex + 1}/${_bootstrapUrls.length}: $baseUrl');
-        onNodeSwitched?.call(baseUrl);
-        return true;
-      }
-    } while (_currentNodeIndex != startIndex);
+    // First pass — try clearnet nodes (fast, no Tor dependency).
+    // Second pass — try .onion nodes (slow, 30-45s timeout each).
+    // This prevents wasting minutes on unreachable .onion before trying localhost.
+    for (final preferClearnet in [true, false]) {
+      _currentNodeIndex = startIndex;
+      do {
+        _currentNodeIndex = (_currentNodeIndex + 1) % _bootstrapUrls.length;
+        final candidate = _bootstrapUrls[_currentNodeIndex];
+        // Skip .onion URLs if we don't have a Tor client
+        if (!_hasTor && candidate.contains('.onion')) continue;
+        // Skip nodes in cooldown (recently failed, exponential backoff)
+        if (_getHealth(candidate).isInCooldown) continue;
+        final isOnion = candidate.contains('.onion');
+        if (preferClearnet && isOnion) continue;
+        if (!preferClearnet && !isOnion) continue;
+        if (candidate != baseUrl) {
+          baseUrl = candidate;
+          losLog(
+              '🔄 Failover: switched to node ${_currentNodeIndex + 1}/${_bootstrapUrls.length}: $baseUrl');
+          onNodeSwitched?.call(baseUrl);
+          return true;
+        }
+      } while (_currentNodeIndex != startIndex);
+    }
     // All nodes in cooldown — reset cooldowns and try round-robin
     if (_allNodesInCooldown()) {
       losLog('⚠️ All nodes in cooldown — resetting cooldowns for fresh retry');
@@ -461,7 +571,8 @@ class ApiService {
         }
 
         return response;
-      } on Exception catch (e) {
+      } catch (e) {
+        // Catch Error too (e.g. RangeError from SOCKS5 .onion failures)
         _getHealth(baseUrl).recordFailure();
         final isLastAttempt = attempts >= maxAttempts - 1;
         losLog('⚠️ Node ${_currentNodeIndex + 1} failed for $endpoint: $e');
@@ -529,13 +640,14 @@ class ApiService {
     }
   }
 
-  /// Get appropriate timeout based on whether using Tor
+  /// Get appropriate timeout for the current baseUrl.
+  /// Clearnet (localhost/IP) = 8s, .onion = 45s.
   Duration get _timeout =>
       baseUrl.contains('.onion') ? _torTimeout : _defaultTimeout;
 
   /// Initialize HTTP client — ALWAYS attempts Tor first (even for localhost),
   /// so we can reach .onion bootstrap peers during failover.
-  /// FIX B-02: Previously only created Tor client if initial baseUrl was .onion,
+  /// Previously only created Tor client if initial baseUrl was .onion,
   /// which meant starting on localhost = no Tor ever = .onion peers unreachable.
   Future<void> _initializeClient() async {
     try {
@@ -611,7 +723,7 @@ class ApiService {
     } else {
       WalletConfig.useFunctionalTestnet();
     }
-    // SECURITY FIX M-06: Sync mainnet mode to WalletService so Ed25519
+    // Sync mainnet mode to WalletService so Ed25519
     // fallback crypto is refused on mainnet.
     WalletService.mainnetMode = (newEnv == NetworkEnvironment.mainnet);
     _nodeHealthMap.clear();
@@ -630,7 +742,7 @@ class ApiService {
     losLog('🌐 [ApiService.getNodeInfo] Fetching node info...');
     try {
       final response = await _requestWithFailover(
-        (url) => _client.get(Uri.parse('$url/node-info')),
+        (url) => _clientFor(url).get(Uri.parse('$url/node-info')),
         '/node-info',
       );
       if (response.statusCode >= 200 && response.statusCode < 300) {
@@ -654,7 +766,7 @@ class ApiService {
         '🌐 [ApiService.getFeeEstimate] Fetching fee estimate for $address...');
     try {
       final response = await _requestWithFailover(
-        (url) => _client.get(Uri.parse('$url/fee-estimate/$address')),
+        (url) => _clientFor(url).get(Uri.parse('$url/fee-estimate/$address')),
         '/fee-estimate/$address',
       );
       if (response.statusCode >= 200 && response.statusCode < 300) {
@@ -677,7 +789,7 @@ class ApiService {
     losLog('🌐 [ApiService.getHealth] Fetching health...');
     try {
       final response = await _requestWithFailover(
-        (url) => _client.get(Uri.parse('$url/health')),
+        (url) => _clientFor(url).get(Uri.parse('$url/health')),
         '/health',
       );
       if (response.statusCode >= 200 && response.statusCode < 300) {
@@ -697,7 +809,7 @@ class ApiService {
     losLog('🌐 [ApiService.getBalance] Fetching balance for $address...');
     try {
       final response = await _requestWithFailover(
-        (url) => _client.get(Uri.parse('$url/bal/$address')),
+        (url) => _clientFor(url).get(Uri.parse('$url/bal/$address')),
         '/bal/$address',
       );
       if (response.statusCode >= 200 && response.statusCode < 300) {
@@ -733,7 +845,7 @@ class ApiService {
     losLog('🌐 [ApiService.getAccount] Fetching account for $address...');
     try {
       final response = await _requestWithFailover(
-        (url) => _client.get(Uri.parse('$url/account/$address')),
+        (url) => _clientFor(url).get(Uri.parse('$url/account/$address')),
         '/account/$address',
       );
       if (response.statusCode >= 200 && response.statusCode < 300) {
@@ -757,7 +869,7 @@ class ApiService {
     losLog('🚠 [API] requestFaucet -> $baseUrl/faucet  address=$address');
     try {
       final response = await _requestWithFailover(
-        (url) => _client.post(
+        (url) => _clientFor(url).post(
           Uri.parse('$url/faucet'),
           headers: {'Content-Type': 'application/json'},
           body: json.encode({'address': address}),
@@ -833,7 +945,7 @@ class ApiService {
       }
 
       final response = await _requestWithFailover(
-        (url) => _client.post(
+        (url) => _clientFor(url).post(
           Uri.parse('$url/send'),
           headers: {'Content-Type': 'application/json'},
           body: json.encode(body),
@@ -858,7 +970,7 @@ class ApiService {
     }
   }
 
-  // Proof-of-Burn — matches backend BurnRequest { coin_type, txid, recipient_address, signature, public_key }
+  // Burn — matches backend BurnRequest { coin_type, txid, recipient_address, signature, public_key }
   Future<Map<String, dynamic>> submitBurn({
     required String coinType, // "btc" or "eth"
     required String txid,
@@ -875,7 +987,7 @@ class ApiService {
       if (recipientAddress != null) {
         body['recipient_address'] = recipientAddress;
       }
-      // FIX F3: Include signature + public_key for authenticated burns
+      // Include signature + public_key for authenticated burns
       if (signature != null) {
         body['signature'] = signature;
       }
@@ -884,7 +996,7 @@ class ApiService {
       }
 
       final response = await _requestWithFailover(
-        (url) => _client.post(
+        (url) => _clientFor(url).post(
           Uri.parse('$url/burn'),
           headers: {'Content-Type': 'application/json'},
           body: json.encode(body),
@@ -914,7 +1026,7 @@ class ApiService {
     losLog('🌐 [ApiService.getValidators] Fetching validators...');
     try {
       final response = await _requestWithFailover(
-        (url) => _client.get(Uri.parse('$url/validators')),
+        (url) => _clientFor(url).get(Uri.parse('$url/validators')),
         '/validators',
       );
       if (response.statusCode >= 200 && response.statusCode < 300) {
@@ -940,7 +1052,7 @@ class ApiService {
     losLog('🌐 [ApiService.getLatestBlock] Fetching latest block...');
     try {
       final response = await _requestWithFailover(
-        (url) => _client.get(Uri.parse('$url/blocks/recent')),
+        (url) => _clientFor(url).get(Uri.parse('$url/blocks/recent')),
         '/blocks/recent',
       );
       if (response.statusCode >= 200 && response.statusCode < 300) {
@@ -969,7 +1081,7 @@ class ApiService {
     losLog('🌐 [ApiService.getRecentBlocks] Fetching recent blocks...');
     try {
       final response = await _requestWithFailover(
-        (url) => _client.get(Uri.parse('$url/blocks/recent')),
+        (url) => _clientFor(url).get(Uri.parse('$url/blocks/recent')),
         '/blocks/recent',
       );
       if (response.statusCode >= 200 && response.statusCode < 300) {
@@ -996,7 +1108,7 @@ class ApiService {
     losLog('🌐 [ApiService.getPeers] Fetching peers...');
     try {
       final response = await _requestWithFailover(
-        (url) => _client.get(Uri.parse('$url/peers')),
+        (url) => _clientFor(url).get(Uri.parse('$url/peers')),
         '/peers',
       );
       if (response.statusCode >= 200 && response.statusCode < 300) {
@@ -1034,11 +1146,11 @@ class ApiService {
     losLog('🌐 [ApiService.getHistory] Fetching history for $address...');
     try {
       final response = await _requestWithFailover(
-        (url) => _client.get(Uri.parse('$url/history/$address')),
+        (url) => _clientFor(url).get(Uri.parse('$url/history/$address')),
         '/history/$address',
       );
       if (response.statusCode >= 200 && response.statusCode < 300) {
-        // FIX C11-04: Backend returns {"transactions": [...]} wrapper,
+        // Backend returns {"transactions": [...]} wrapper,
         // not a bare array. Handle both formats for resilience.
         final decoded = json.decode(response.body);
         final List<dynamic> data = decoded is List
@@ -1064,7 +1176,7 @@ class ApiService {
     losLog('🌐 [ApiService.getSupply] Fetching supply info...');
     try {
       final response = await _requestWithFailover(
-        (url) => _client.get(Uri.parse('$url/supply')),
+        (url) => _clientFor(url).get(Uri.parse('$url/supply')),
         '/supply',
       );
       if (response.statusCode >= 200 && response.statusCode < 300) {
@@ -1085,7 +1197,7 @@ class ApiService {
     losLog('🌐 [ApiService.getTransaction] Fetching transaction $hash...');
     try {
       final response = await _requestWithFailover(
-        (url) => _client.get(Uri.parse('$url/transaction/$hash')),
+        (url) => _clientFor(url).get(Uri.parse('$url/transaction/$hash')),
         '/transaction/$hash',
       );
       if (response.statusCode >= 200 && response.statusCode < 300) {
@@ -1106,7 +1218,7 @@ class ApiService {
     losLog('🌐 [ApiService.getBlock] Fetching block $hash...');
     try {
       final response = await _requestWithFailover(
-        (url) => _client.get(Uri.parse('$url/block/$hash')),
+        (url) => _clientFor(url).get(Uri.parse('$url/block/$hash')),
         '/block/$hash',
       );
       if (response.statusCode >= 200 && response.statusCode < 300) {
@@ -1127,7 +1239,7 @@ class ApiService {
     losLog('🌐 [ApiService.search] Searching for "$query"...');
     try {
       final response = await _requestWithFailover(
-        (url) => _client.get(Uri.parse('$url/search/$query')),
+        (url) => _clientFor(url).get(Uri.parse('$url/search/$query')),
         '/search/$query',
       );
       if (response.statusCode >= 200 && response.statusCode < 300) {
@@ -1147,7 +1259,7 @@ class ApiService {
     losLog('🌐 [ApiService.getConsensus] Fetching consensus...');
     try {
       final response = await _requestWithFailover(
-        (url) => _client.get(Uri.parse('$url/consensus')),
+        (url) => _clientFor(url).get(Uri.parse('$url/consensus')),
         '/consensus',
       );
       if (response.statusCode >= 200 && response.statusCode < 300) {
@@ -1167,7 +1279,7 @@ class ApiService {
     losLog('🌐 [ApiService.getRewardInfo] Fetching reward info...');
     try {
       final response = await _requestWithFailover(
-        (url) => _client.get(Uri.parse('$url/reward-info')),
+        (url) => _clientFor(url).get(Uri.parse('$url/reward-info')),
         '/reward-info',
       );
       if (response.statusCode >= 200 && response.statusCode < 300) {
@@ -1191,7 +1303,7 @@ class ApiService {
     losLog('🪙 [API] getTokens...');
     try {
       final response = await _requestWithFailover(
-        (url) => _client.get(Uri.parse('$url/tokens')),
+        (url) => _clientFor(url).get(Uri.parse('$url/tokens')),
         '/tokens',
       );
       if (response.statusCode >= 200 && response.statusCode < 300) {
@@ -1215,7 +1327,7 @@ class ApiService {
     losLog('🪙 [API] getToken: $contractAddress');
     try {
       final response = await _requestWithFailover(
-        (url) => _client.get(Uri.parse('$url/token/$contractAddress')),
+        (url) => _clientFor(url).get(Uri.parse('$url/token/$contractAddress')),
         '/token/$contractAddress',
       );
       if (response.statusCode >= 200 && response.statusCode < 300) {
@@ -1235,7 +1347,7 @@ class ApiService {
     losLog('🪙 [API] getTokenBalance: $contractAddress / $holder');
     try {
       final response = await _requestWithFailover(
-        (url) => _client
+        (url) => _clientFor(url)
             .get(Uri.parse('$url/token/$contractAddress/balance/$holder')),
         '/token/$contractAddress/balance/$holder',
       );
@@ -1256,7 +1368,7 @@ class ApiService {
     losLog('🪙 [API] getTokenAllowance: $contractAddress / $owner → $spender');
     try {
       final response = await _requestWithFailover(
-        (url) => _client.get(
+        (url) => _clientFor(url).get(
             Uri.parse('$url/token/$contractAddress/allowance/$owner/$spender')),
         '/token/$contractAddress/allowance/$owner/$spender',
       );
@@ -1306,7 +1418,7 @@ class ApiService {
       if (fee != null) body['fee'] = fee;
 
       final response = await _requestWithFailover(
-        (url) => _client.post(
+        (url) => _clientFor(url).post(
           Uri.parse('$url/call-contract'),
           headers: {'Content-Type': 'application/json'},
           body: json.encode(body),
@@ -1354,7 +1466,7 @@ class ApiService {
       if (fee != null) body['fee'] = fee;
 
       final response = await _requestWithFailover(
-        (url) => _client.post(
+        (url) => _clientFor(url).post(
           Uri.parse('$url/deploy-contract'),
           headers: {'Content-Type': 'application/json'},
           body: json.encode(body),
@@ -1382,7 +1494,7 @@ class ApiService {
     losLog('📊 [API] getDexPools...');
     try {
       final response = await _requestWithFailover(
-        (url) => _client.get(Uri.parse('$url/dex/pools')),
+        (url) => _clientFor(url).get(Uri.parse('$url/dex/pools')),
         '/dex/pools',
       );
       if (response.statusCode >= 200 && response.statusCode < 300) {
@@ -1406,8 +1518,8 @@ class ApiService {
     losLog('📊 [API] getDexPool: $contractAddress/$poolId');
     try {
       final response = await _requestWithFailover(
-        (url) =>
-            _client.get(Uri.parse('$url/dex/pool/$contractAddress/$poolId')),
+        (url) => _clientFor(url)
+            .get(Uri.parse('$url/dex/pool/$contractAddress/$poolId')),
         '/dex/pool/$contractAddress/$poolId',
       );
       if (response.statusCode >= 200 && response.statusCode < 300) {
@@ -1430,7 +1542,7 @@ class ApiService {
     losLog('📊 [API] getDexQuote: $contractAddress/$poolId/$tokenIn/$amountIn');
     try {
       final response = await _requestWithFailover(
-        (url) => _client.get(Uri.parse(
+        (url) => _clientFor(url).get(Uri.parse(
             '$url/dex/quote/$contractAddress/$poolId/$tokenIn/$amountIn')),
         '/dex/quote/$contractAddress/$poolId/$tokenIn/$amountIn',
       );
@@ -1451,7 +1563,7 @@ class ApiService {
     losLog('📊 [API] getDexPosition: $contractAddress/$poolId/$user');
     try {
       final response = await _requestWithFailover(
-        (url) => _client
+        (url) => _clientFor(url)
             .get(Uri.parse('$url/dex/position/$contractAddress/$poolId/$user')),
         '/dex/position/$contractAddress/$poolId/$user',
       );
@@ -1466,6 +1578,65 @@ class ApiService {
     }
   }
 
+  // ─── Smart Contract Browsing ─────────────────────────────────────
+
+  /// Get details of a deployed smart contract by address.
+  Future<Map<String, dynamic>> getContract(String address) async {
+    losLog('📜 [API] getContract: $address');
+    try {
+      final response = await _requestWithFailover(
+        (url) => _clientFor(url).get(Uri.parse('$url/contract/$address')),
+        '/contract/$address',
+      );
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        return json.decode(response.body) as Map<String, dynamic>;
+      }
+      return {};
+    } catch (e) {
+      losLog('📜 getContract error: $e');
+      return {};
+    }
+  }
+
+  /// List all deployed contracts on the network.
+  Future<List<Map<String, dynamic>>> getContracts() async {
+    losLog('📜 [API] getContracts...');
+    try {
+      final response = await _requestWithFailover(
+        (url) => _clientFor(url).get(Uri.parse('$url/contracts')),
+        '/contracts',
+      );
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        final data = json.decode(response.body);
+        if (data is List) {
+          return data.cast<Map<String, dynamic>>();
+        }
+      }
+      return [];
+    } catch (e) {
+      losLog('📜 getContracts error: $e');
+      return [];
+    }
+  }
+
+  /// Get mempool statistics.
+  Future<Map<String, dynamic>> getMempoolStats() async {
+    losLog('📊 [API] getMempoolStats...');
+    try {
+      final response = await _requestWithFailover(
+        (url) => _clientFor(url).get(Uri.parse('$url/mempool/stats')),
+        '/mempool/stats',
+      );
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        return json.decode(response.body) as Map<String, dynamic>;
+      }
+      return {};
+    } catch (e) {
+      losLog('📊 getMempoolStats error: $e');
+      return {};
+    }
+  }
+
   /// Cleanup: stop bundled Tor and cancel background timers
   Future<void> dispose() async {
     losLog('🌐 [ApiService.dispose] Disposing...');
@@ -1473,6 +1644,7 @@ class ApiService {
     _rediscoveryTimer?.cancel();
     _healthCheckTimer?.cancel();
     _client.close();
+    _directClient.close();
     await _torService.stop();
     losLog('🌐 [ApiService.dispose] Disposed');
   }
@@ -1484,7 +1656,7 @@ class ApiService {
     if (_disposed) return; // Client already closed — skip silently
     try {
       final response = await _requestWithFailover(
-        (url) => _client.get(Uri.parse('$url/network/peers')),
+        (url) => _clientFor(url).get(Uri.parse('$url/network/peers')),
         '/network/peers',
       );
       if (response.statusCode >= 200 && response.statusCode < 300) {
@@ -1496,33 +1668,44 @@ class ApiService {
         if (endpoints.isNotEmpty) {
           await PeerDiscoveryService.savePeers(endpoints);
           for (final ep in endpoints) {
-            final onion = ep['onion_address']?.toString() ?? '';
-            if (onion.isNotEmpty && onion.endsWith('.onion')) {
-              // Extract bare hostname (strip any embedded port/scheme)
-              final hostname =
-                  onion.contains(':') ? onion.split(':').first : onion;
+            // Use host_address (new field) with onion_address as fallback
+            final host = (ep['host_address']?.toString() ?? '').isNotEmpty
+                ? ep['host_address'].toString()
+                : ep['onion_address']?.toString() ?? '';
+            if (host.isEmpty) continue;
 
-              // DEDUP FIX: Check if this onion hostname already exists in
-              // _bootstrapUrls (which have correct ports from NetworkConfig).
-              // Prevents adding "http://x.onion" when "http://x.onion:3030"
-              // is already present — the root cause of port-less duplicates.
-              final alreadyKnown = _bootstrapUrls.any((existing) {
-                final uri = Uri.tryParse(existing);
-                return uri?.host == hostname;
-              });
-              if (alreadyKnown) continue;
+            final isOnion = host.contains('.onion');
 
-              // Build URL with rest_port if provided by the API
-              final restPort = ep['rest_port'] as int?;
-              final url = (restPort != null && restPort != 80)
-                  ? 'http://$hostname:$restPort'
-                  : 'http://$hostname';
+            // Extract bare hostname (strip any embedded port/scheme)
+            final hostname = host.contains(':') ? host.split(':').first : host;
 
-              // Exclude own onion (validator self-connection prevention)
-              if (url == _excludedOnionUrl) continue;
-              if (!_bootstrapUrls.contains(url)) {
-                _bootstrapUrls.add(url);
-              }
+            // DEDUP FIX: Check if this hostname already exists in
+            // _bootstrapUrls (which have correct ports from NetworkConfig).
+            // Prevents adding "http://x.onion" when "http://x.onion:3030"
+            // is already present — the root cause of port-less duplicates.
+            final alreadyKnown = _bootstrapUrls.any((existing) {
+              final uri = Uri.tryParse(existing);
+              return uri?.host == hostname;
+            });
+            if (alreadyKnown) continue;
+
+            // Skip .onion URLs when Tor is not available
+            if (isOnion && !_hasTor) continue;
+
+            // Build URL with rest_port if provided by the API
+            final restPort = ep['rest_port'] as int?;
+            final port = restPort ??
+                (host.contains(':')
+                    ? int.tryParse(host.split(':').last)
+                    : null);
+            final url = (port != null && port != 80)
+                ? 'http://$hostname:$port'
+                : 'http://$hostname';
+
+            // Exclude own onion (validator self-connection prevention)
+            if (url == _excludedOnionUrl) continue;
+            if (!_bootstrapUrls.contains(url)) {
+              _bootstrapUrls.add(url);
             }
           }
           losLog('🌐 Discovery: ${endpoints.length} endpoint(s), '

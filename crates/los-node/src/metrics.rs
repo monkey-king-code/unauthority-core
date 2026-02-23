@@ -39,19 +39,8 @@ pub struct LosMetrics {
     pub active_validators: IntGauge,
     pub validator_votes_total: IntCounter,
 
-    // Oracle metrics
-    pub oracle_submissions_total: IntCounter,
-    pub oracle_consensus_reached_total: IntCounter,
-    pub oracle_outliers_total: IntCounter,
-    pub oracle_btc_price_usd: Gauge,
-    pub oracle_eth_price_usd: Gauge,
-
-    // PoB Distribution metrics
-    pub pob_burns_total: IntCounter,
-    pub pob_minted_los: Counter,
-    pub pob_burned_btc: Counter,
-    pub pob_burned_eth: Counter,
-    pub pob_remaining_supply: Gauge,
+    // Distribution metrics (PoW mining + burn)
+    pub mint_remaining_supply: Gauge,
 
     // Network metrics
     pub connected_peers: IntGauge,
@@ -131,7 +120,7 @@ impl LosMetrics {
 
         let mint_blocks_total = IntCounter::with_opts(Opts::new(
             "los_mint_blocks_total",
-            "Number of mint blocks (PoB)",
+            "Number of mint blocks (PoW mining)",
         ))?;
         registry.register(Box::new(mint_blocks_total.clone()))?;
 
@@ -210,61 +199,12 @@ impl LosMetrics {
         ))?;
         registry.register(Box::new(validator_votes_total.clone()))?;
 
-        // Oracle metrics
-        let oracle_submissions_total = IntCounter::with_opts(Opts::new(
-            "los_oracle_submissions_total",
-            "Total oracle price submissions",
+        // Distribution metrics (PoW mining + burn)
+        let mint_remaining_supply = Gauge::with_opts(Opts::new(
+            "los_mint_remaining_supply",
+            "Remaining LOS supply for PoW mining distribution",
         ))?;
-        registry.register(Box::new(oracle_submissions_total.clone()))?;
-
-        let oracle_consensus_reached_total = IntCounter::with_opts(Opts::new(
-            "los_oracle_consensus_reached_total",
-            "Times oracle consensus reached",
-        ))?;
-        registry.register(Box::new(oracle_consensus_reached_total.clone()))?;
-
-        let oracle_outliers_total = IntCounter::with_opts(Opts::new(
-            "los_oracle_outliers_total",
-            "Oracle price outliers detected",
-        ))?;
-        registry.register(Box::new(oracle_outliers_total.clone()))?;
-
-        let oracle_btc_price_usd = Gauge::with_opts(Opts::new(
-            "los_oracle_btc_price_usd",
-            "Current BTC/USD oracle price",
-        ))?;
-        registry.register(Box::new(oracle_btc_price_usd.clone()))?;
-
-        let oracle_eth_price_usd = Gauge::with_opts(Opts::new(
-            "los_oracle_eth_price_usd",
-            "Current ETH/USD oracle price",
-        ))?;
-        registry.register(Box::new(oracle_eth_price_usd.clone()))?;
-
-        // PoB Distribution metrics
-        let pob_burns_total =
-            IntCounter::with_opts(Opts::new("los_pob_burns_total", "Total PoB burn events"))?;
-        registry.register(Box::new(pob_burns_total.clone()))?;
-
-        let pob_minted_los =
-            Counter::with_opts(Opts::new("los_pob_minted_los", "Total LOS minted via PoB"))?;
-        registry.register(Box::new(pob_minted_los.clone()))?;
-
-        let pob_burned_btc = Counter::with_opts(Opts::new(
-            "los_pob_burned_btc",
-            "Total BTC burned (in satoshis)",
-        ))?;
-        registry.register(Box::new(pob_burned_btc.clone()))?;
-
-        let pob_burned_eth =
-            Counter::with_opts(Opts::new("los_pob_burned_eth", "Total ETH burned (in wei)"))?;
-        registry.register(Box::new(pob_burned_eth.clone()))?;
-
-        let pob_remaining_supply = Gauge::with_opts(Opts::new(
-            "los_pob_remaining_supply",
-            "Remaining LOS supply for PoB distribution",
-        ))?;
-        registry.register(Box::new(pob_remaining_supply.clone()))?;
+        registry.register(Box::new(mint_remaining_supply.clone()))?;
 
         // Network metrics
         let connected_peers = IntGauge::with_opts(Opts::new(
@@ -415,16 +355,7 @@ impl LosMetrics {
             consensus_latency_seconds,
             active_validators,
             validator_votes_total,
-            oracle_submissions_total,
-            oracle_consensus_reached_total,
-            oracle_outliers_total,
-            oracle_btc_price_usd,
-            oracle_eth_price_usd,
-            pob_burns_total,
-            pob_minted_los,
-            pob_burned_btc,
-            pob_burned_eth,
-            pob_remaining_supply,
+            mint_remaining_supply,
             connected_peers,
             p2p_messages_received_total,
             p2p_messages_sent_total,
@@ -499,8 +430,8 @@ impl LosMetrics {
         self.mint_blocks_total.reset();
         self.mint_blocks_total.inc_by(mint_count);
 
-        // PoB distribution metrics
-        self.pob_remaining_supply
+        // PoW mining distribution metrics
+        self.mint_remaining_supply
             .set(ledger.distribution.remaining_supply as f64);
     }
 

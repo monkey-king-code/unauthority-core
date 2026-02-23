@@ -308,12 +308,12 @@ impl SlashingManager {
         if profile.total_blocks_observed >= DOWNTIME_WINDOW_BLOCKS
             && !profile.meets_uptime_requirement()
         {
-            // SECURITY FIX: Use integer math for slash calculation
+            // Use integer math for slash calculation
             // DOWNTIME: 1% of stake (100 bps). Double-signing: 100% (10000 bps).
             let slash_amount = if DOWNTIME_SLASH_BPS >= 10_000 {
                 staked_amount_cil
             } else {
-                // FIX M-2: Use DOWNTIME_SLASH_BPS constant properly
+                // Use DOWNTIME_SLASH_BPS constant properly
                 // slash = stake * bps / 10_000, rounds up via ceiling division
                 (staked_amount_cil * DOWNTIME_SLASH_BPS as u128).div_ceil(10_000)
             };
@@ -553,7 +553,7 @@ impl SlashingManager {
             let offender = proposal.offender.clone();
             let offense_type = proposal.offense_type;
 
-            // SECURITY FIX V4#7: Use actual staked_amount from the proposal instead of hardcoded 100k
+            // Use actual staked_amount from the proposal instead of hardcoded 100k
             // The staked_amount should be provided by the caller or read from ledger
             let staked_amount = proposal.staked_amount_cil.unwrap_or(0);
 
@@ -659,7 +659,7 @@ mod tests {
         let mut manager = SlashingManager::new();
         manager.register_validator("validator1".to_string());
 
-        let staked = 100_000_000_000u128; // 1000 LOS
+        let staked = 100_000_000_000u128; // 1 LOS
         let slash_amount = manager
             .slash_double_signing("validator1", 100, staked, 1000)
             .unwrap();
@@ -705,7 +705,7 @@ mod tests {
         let mut manager = SlashingManager::new();
         manager.register_validator("validator1".to_string());
 
-        let staked = 100_000_000_000u128; // 1000 LOS
+        let staked = 100_000_000_000u128; // 1 LOS
 
         // Record low uptime: 90% (below 95% threshold)
         for _ in 0..45000 {

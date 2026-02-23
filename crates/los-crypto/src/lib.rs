@@ -96,7 +96,7 @@ pub fn generate_keypair() -> KeyPair {
 /// # Panics
 /// If seed is shorter than 32 bytes.
 pub fn generate_keypair_from_seed(bip39_seed: &[u8]) -> KeyPair {
-    // SECURITY FIX M-NEW-02: Mutex guard around set_seeded_rng() + keypair().
+    // Mutex guard around set_seeded_rng() + keypair().
     // pqcrypto_internals::set_seeded_rng() sets GLOBAL thread-local state.
     // If two threads call this concurrently with different seeds, the RNG
     // state could be overwritten between set_seeded_rng() and keypair(),

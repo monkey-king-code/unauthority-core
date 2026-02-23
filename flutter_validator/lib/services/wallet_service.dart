@@ -186,7 +186,7 @@ class WalletService {
         seed.fillRange(0, seed.length, 0);
       }
     } else {
-      // SECURITY FIX F2: Refuse Ed25519 fallback on mainnet.
+      // Refuse Ed25519 fallback on mainnet.
       // Mainnet requires Dilithium5 post-quantum signatures.
       if (mainnetMode) {
         throw Exception(
@@ -275,7 +275,7 @@ class WalletService {
         seed.fillRange(0, seed.length, 0);
       }
     } else {
-      // SECURITY FIX F2: Refuse Ed25519 fallback on mainnet.
+      // Refuse Ed25519 fallback on mainnet.
       if (mainnetMode) {
         throw Exception(
           'MAINNET SECURITY: Dilithium5 native library required for wallet import. '
@@ -381,7 +381,7 @@ class WalletService {
         keypair.secretKey.fillRange(0, keypair.secretKey.length, 0);
       }
     } else {
-      // SECURITY FIX F2: Refuse Ed25519 fallback on mainnet.
+      // Refuse Ed25519 fallback on mainnet.
       if (mainnetMode) {
         throw Exception(
           'MAINNET SECURITY: Dilithium5 native library required for key import. '
@@ -413,15 +413,17 @@ class WalletService {
   /// Convert hex string to bytes
   Uint8List _hexToBytes(String hex) {
     final clean = hex.replaceAll(RegExp(r'[^0-9a-fA-F]'), '');
+    // Odd-length hex is malformed — pad with leading zero for safety
+    final padded = clean.length.isOdd ? '0$clean' : clean;
     final bytes = <int>[];
-    for (var i = 0; i < clean.length - 1; i += 2) {
-      bytes.add(int.parse(clean.substring(i, i + 2), radix: 16));
+    for (var i = 0; i < padded.length; i += 2) {
+      bytes.add(int.parse(padded.substring(i, i + 2), radix: 16));
     }
     return Uint8List.fromList(bytes);
   }
 
   /// Get current wallet info.
-  /// FIX C-02: Does NOT return mnemonic by default. Use [includeMnemonic]
+  /// Does NOT return mnemonic by default. Use [includeMnemonic]
   /// only when the user explicitly requests seed phrase (e.g. settings backup).
   Future<Map<String, String>?> getCurrentWallet({
     bool includeMnemonic = false,
@@ -538,7 +540,7 @@ class WalletService {
         throw Exception('Secret key not found in secure storage');
       }
 
-      // FIX: Secret key is stored as Base64 (see DilithiumKeypair.secretKeyBase64),
+      // Secret key is stored as Base64 (see DilithiumKeypair.secretKeyBase64),
       // NOT hex. Decode accordingly. Detect format for backward compatibility.
       Uint8List secretKey;
       if (skStored.contains('+') ||
@@ -559,17 +561,17 @@ class WalletService {
             '🔑 [WalletService.signTransaction] Signed (${sigHex.length} hex chars), mode: dilithium5');
         return sigHex;
       } finally {
-        // SECURITY FIX L-01: Zero secret key in Dart memory after signing.
+        // Zero secret key in Dart memory after signing.
         // FFI layer zeros its copy, but Dart Uint8List remains until GC.
         secretKey.fillRange(0, secretKey.length, 0);
       }
     } else {
-      // SECURITY FIX F1: Replaced broken SHA256(msg||key) hash with proper Ed25519 signing.
+      // Replaced broken SHA256(msg||key) hash with proper Ed25519 signing.
       // SHA256(msg||key) is NOT a signature scheme — it's vulnerable to length-extension
       // attacks and allows anyone with the hash to forge new messages.
       // Ed25519 is a proper asymmetric signature scheme.
 
-      // SECURITY FIX F2: Refuse Ed25519 fallback on mainnet.
+      // Refuse Ed25519 fallback on mainnet.
       if (mainnetMode) {
         throw Exception(
           'MAINNET SECURITY: Dilithium5 native library required for signing. '
@@ -594,7 +596,7 @@ class WalletService {
             '🔑 [WalletService.signTransaction] Signed (${sigHex.length} hex chars), mode: ed25519');
         return sigHex;
       } finally {
-        // SECURITY FIX L-01: Zero private key material after signing
+        // Zero private key material after signing
         privateKeyBytes.fillRange(0, privateKeyBytes.length, 0);
         seed.fillRange(0, seed.length, 0);
       }

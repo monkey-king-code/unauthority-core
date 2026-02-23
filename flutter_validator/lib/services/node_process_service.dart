@@ -31,7 +31,7 @@ class NodeProcessService extends ChangeNotifier {
   NodeStatus _status = NodeStatus.stopped;
   String? _nodeAddress; // Node's LOSX... address
   String? _onionAddress; // .onion hidden service address
-  // SECURITY FIX A-01: Seed phrase is NO LONGER cached in memory.
+  // Seed phrase is NO LONGER cached in memory.
   // It is re-read from FlutterSecureStorage on demand (auto-restart).
   // This prevents the mnemonic from lingering in process memory.
   static const _secureStorage = FlutterSecureStorage();
@@ -39,6 +39,9 @@ class NodeProcessService extends ChangeNotifier {
   String? _bootstrapNodes; // Saved for auto-restart
   int? _p2pPort; // Saved for auto-restart
   String? _torSocks5; // Saved for auto-restart
+  String? _hostAddress; // Saved for auto-restart (clearnet mode)
+  bool _enableMining = false; // Saved for auto-restart
+  int _miningThreads = 1; // Saved for auto-restart
   int _apiPort = 3035;
   String? _dataDir;
   String? _errorMessage;
@@ -55,6 +58,7 @@ class NodeProcessService extends ChangeNotifier {
   NodeStatus get status => _status;
   String? get nodeAddress => _nodeAddress;
   String? get onionAddress => _onionAddress;
+  String? get hostAddress => _hostAddress;
   int get apiPort => _apiPort;
   String? get dataDir => _dataDir;
   String? get errorMessage => _errorMessage;
@@ -63,6 +67,8 @@ class NodeProcessService extends ChangeNotifier {
       _status == NodeStatus.running || _status == NodeStatus.syncing;
   bool get isStopped =>
       _status == NodeStatus.stopped || _status == NodeStatus.error;
+  bool get enableMining => _enableMining;
+  int get miningThreads => _miningThreads;
 
   String get localApiUrl => 'http://127.0.0.1:$_apiPort';
 
@@ -165,7 +171,7 @@ class NodeProcessService extends ChangeNotifier {
   /// start a new los-node with the same data-dir, it will also block on
   /// flock() and become ANOTHER UE zombie — creating a cascade.
   ///
-  /// FIX: Also check the PID lockfile written by los-node. If the PID in the
+  /// Also check the PID lockfile written by los-node. If the PID in the
   /// lockfile is dead/zombie/UE, the DB must be nuked.
   Future<void> _clearStaleLockIfNeeded() async {
     try {
@@ -314,12 +320,15 @@ class NodeProcessService extends ChangeNotifier {
   Future<bool> start({
     int port = 3035,
     String? onionAddress,
+    String? hostAddress,
     String? bootstrapNodes,
     String? walletPassword,
     String? seedPhrase,
     int? p2pPort,
     String? torSocks5,
     String testnetLevel = 'consensus',
+    bool enableMining = false,
+    int miningThreads = 1,
   }) async {
     if (_status == NodeStatus.starting || _status == NodeStatus.running) {
       losLog('⚠️ Node already running or starting');
@@ -366,15 +375,15 @@ class NodeProcessService extends ChangeNotifier {
       //   'consensus'  = Level 2 (real aBFT, real signatures — default)
       //   'production' = Level 3 (identical to mainnet — full security)
       const isMainnetBuild =
-          String.fromEnvironment('NETWORK', defaultValue: 'mainnet') ==
+          String.fromEnvironment('NETWORK', defaultValue: 'testnet') ==
               'mainnet';
       final env = <String, String>{
         if (!isMainnetBuild) 'LOS_TESTNET_LEVEL': testnetLevel,
       };
-      // SECURITY FIX S-01: Seed phrase is NO LONGER passed via environment variable.
+      // Seed phrase is NO LONGER passed via environment variable.
       // It is now sent via stdin pipe (see below) to prevent exposure via
       // /proc/[pid]/environ on Linux.
-      // SECURITY FIX A-01: Seed phrase is NOT cached as a field anymore.
+      // Seed phrase is NOT cached as a field anymore.
       // For auto-restart, it is re-read from FlutterSecureStorage.
       String? effectiveSeed = seedPhrase;
       if (effectiveSeed == null || effectiveSeed.isEmpty) {
@@ -384,6 +393,10 @@ class NodeProcessService extends ChangeNotifier {
       if (onionAddress != null) {
         env['LOS_ONION_ADDRESS'] = onionAddress;
         _onionAddress = onionAddress;
+      }
+      if (hostAddress != null && hostAddress.isNotEmpty) {
+        env['LOS_HOST_ADDRESS'] = hostAddress;
+        _hostAddress = hostAddress; // Save for auto-restart
       }
       if (bootstrapNodes != null && bootstrapNodes.isNotEmpty) {
         env['LOS_BOOTSTRAP_NODES'] = bootstrapNodes;
@@ -403,13 +416,15 @@ class NodeProcessService extends ChangeNotifier {
         env['LOS_TOR_SOCKS5'] = effectiveTorSocks5;
         _torSocks5 = effectiveTorSocks5; // Save for auto-restart
       }
-      // SECURITY FIX F5: Wallet password passed via stdin pipe instead of
+      // Wallet password passed via stdin pipe instead of
       // environment variable. Environment variables are readable via
       // /proc/[pid]/environ on Linux. Stdin is not externally observable.
       final bool hasWalletPassword =
           walletPassword != null && walletPassword.isNotEmpty;
 
       // 4. Build CLI args
+      _enableMining = enableMining; // Save for auto-restart
+      _miningThreads = miningThreads; // Save for auto-restart
       final args = <String>[
         if (isMainnetBuild)
           '--mainnet', // Safety gate: must match compile-time feature
@@ -420,6 +435,11 @@ class NodeProcessService extends ChangeNotifier {
         '--node-id',
         'flutter-validator',
         '--json-log',
+        if (enableMining) '--mine',
+        if (enableMining && miningThreads > 1) ...[
+          '--mine-threads',
+          miningThreads.toString()
+        ],
       ];
 
       losLog('🚀 Starting los-node: $binaryPath ${args.join(' ')}');
@@ -433,7 +453,7 @@ class NodeProcessService extends ChangeNotifier {
         workingDirectory: await _getWorkingDir(),
       );
 
-      // SECURITY FIX F5+S-01: Write secrets to stdin pipe then close.
+      // Write secrets to stdin pipe then close.
       // Protocol: line 1 = wallet_password, line 2 = seed_phrase.
       // This avoids exposing secrets in /proc/[pid]/environ on Linux.
       // Empty lines are sent for missing values (Rust side skips empty lines).
@@ -444,7 +464,7 @@ class NodeProcessService extends ChangeNotifier {
         _process!.stdin.writeln(stdinSeed);
         await _process!.stdin.flush();
         await _process!.stdin.close();
-        // SECURITY FIX A-01: Do not retain seed reference after passing to stdin
+        // Do not retain seed reference after passing to stdin
       }
 
       // 6. Monitor stdout for JSON events + human-readable logs
@@ -468,7 +488,7 @@ class NodeProcessService extends ChangeNotifier {
       _process!.exitCode.then(_handleProcessExit);
 
       // 8. Wait for node_ready event (max 180s)
-      // FIX: 60s was too tight — Dilithium5 keygen + DB init + genesis loading
+      // 60s was too tight — Dilithium5 keygen + DB init + genesis loading
       // can take 50-70s on some machines, leaving near-zero margin for the
       // node_ready JSON event to reach the Dart event loop before timeout.
       // 180s gives comfortable headroom for slow machines / cold start.
@@ -539,23 +559,29 @@ class NodeProcessService extends ChangeNotifier {
   /// Force restart
   Future<bool> restart({
     String? onionAddress,
+    String? hostAddress,
     String? bootstrapNodes,
     String? walletPassword,
     int? p2pPort,
     String? torSocks5,
+    bool? enableMining,
+    int? miningThreads,
   }) async {
     await stop();
     await Future.delayed(const Duration(seconds: 2));
-    // SECURITY FIX A-01: Seed phrase is re-read from SecureStorage,
+    // Seed phrase is re-read from SecureStorage,
     // not cached as a field. Pass null to let start() re-read it.
     return start(
       port: _apiPort,
       onionAddress: onionAddress ?? _onionAddress,
+      hostAddress: hostAddress ?? _hostAddress,
       bootstrapNodes: bootstrapNodes ?? _bootstrapNodes,
       walletPassword: walletPassword,
       seedPhrase: null, // Re-read from SecureStorage inside start()
       p2pPort: p2pPort ?? _p2pPort,
       torSocks5: torSocks5 ?? _torSocks5,
+      enableMining: enableMining ?? _enableMining,
+      miningThreads: miningThreads ?? _miningThreads,
     );
   }
 
@@ -582,7 +608,7 @@ class NodeProcessService extends ChangeNotifier {
     // the node's REST/gRPC API is up and serving requests.
     if (line.contains('API Server running at') ||
         line.contains('gRPC Server STARTED') ||
-        line.contains('UNAUTHORITY (LOS) ORACLE NODE')) {
+        line.contains('UNAUTHORITY (LOS)')) {
       if (_status != NodeStatus.running) {
         _status = NodeStatus.running;
         _addLog('✅ Node is running!');
@@ -593,10 +619,10 @@ class NodeProcessService extends ChangeNotifier {
 
   void _handleStderr(String line) {
     _addLog('[ERR] $line');
-    // CRITICAL FIX: Only treat truly FATAL errors as node failures.
+    // Only treat truly FATAL errors as node failures.
     // Previously `line.contains('❌')` matched non-fatal errors like:
     //   "❌ P2P dial error: Transport(Timeout)" — normal Tor jitter
-    //   "❌ Oracle sign error" — transient signing failure
+    //   "❌ Gossip sign error" — transient signing failure
     //   "❌ Auto-Receive signing failed" — non-critical
     // These set NodeStatus.error → killed the running node.
     //
@@ -657,8 +683,21 @@ class NodeProcessService extends ChangeNotifier {
         _setError(userMsg);
         losLog('🛑 Fatal JSON event: $errorCode (path: $errorPath)');
         break;
+      case 'supply_audit_failed':
+        final detail = event['detail']?.toString() ?? 'unknown';
+        _addLog('⚠️ Supply audit failed: $detail');
+        losLog('⚠️ Supply audit event: $detail');
+        break;
+      case 'fork_detected':
+        final detail = event['detail']?.toString() ??
+            event['description']?.toString() ??
+            'unknown';
+        _addLog('🚨 Fork detected: $detail');
+        losLog('🚨 Fork detected event: $detail');
+        break;
       default:
-        losLog('Unknown JSON event: $type');
+        // Log unknown events silently — don't spam the user log
+        losLog('ℹ️ Unhandled JSON event: $type');
     }
   }
 
@@ -692,15 +731,18 @@ class NodeProcessService extends ChangeNotifier {
           // Kill any zombie processes before restart to release DB lock
           await _killOrphanedNode(_apiPort);
           _lastFatalError = null; // Reset for next attempt
-          // SECURITY FIX A-01: Pass null seedPhrase — start() will
+          // Pass null seedPhrase — start() will
           // re-read from SecureStorage on demand.
           start(
               port: _apiPort,
               onionAddress: _onionAddress,
+              hostAddress: _hostAddress,
               seedPhrase: null,
               bootstrapNodes: _bootstrapNodes,
               p2pPort: _p2pPort,
-              torSocks5: _torSocks5);
+              torSocks5: _torSocks5,
+              enableMining: _enableMining,
+              miningThreads: _miningThreads);
         });
       } else {
         _setError(
@@ -727,7 +769,7 @@ class NodeProcessService extends ChangeNotifier {
   // ════════════════════════════════════════════════════════════════════════
 
   /// Find los-node binary — checks bundled location, cargo build output, PATH
-  /// SECURITY FIX J-02: In release builds, restrict discovery to bundled
+  /// In release builds, restrict discovery to bundled
   /// locations only. Dev paths (cargo build, PATH) only in debug mode.
   Future<String?> _findNodeBinary() async {
     final binaryName = Platform.isWindows ? 'los-node.exe' : 'los-node';
@@ -748,7 +790,7 @@ class NodeProcessService extends ChangeNotifier {
       }
     }
 
-    // SECURITY FIX J-02: Only search development paths in debug mode.
+    // Only search development paths in debug mode.
     // In release builds, an attacker could place a malicious binary in
     // PATH or cargo output directory to hijack the validator.
     if (!kDebugMode) {

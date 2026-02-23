@@ -1,4 +1,3 @@
-import '../utils/log.dart';
 {
   "version": "11.0",
   "network": "testnet",

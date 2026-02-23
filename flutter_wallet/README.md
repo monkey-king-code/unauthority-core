@@ -2,7 +2,7 @@
 
 Desktop wallet for the **Unauthority (LOS)** blockchain. Send, receive, and burn-to-mint LOS tokens with post-quantum security.
 
-[![Version](https://img.shields.io/badge/version-1.0.13-blue)]()
+[![Version](https://img.shields.io/badge/version-2.0.0-blue)]()
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue)](../LICENSE)
 
 ---
@@ -11,7 +11,7 @@ Desktop wallet for the **Unauthority (LOS)** blockchain. Send, receive, and burn
 
 - **Create / Import Wallet** — generate new keys or recover from 24-word BIP39 seed phrase
 - **Send & Receive LOS** — instant transactions with < 3 second finality
-- **Proof-of-Burn** — burn BTC/ETH to mint LOS tokens
+- **Burn LOS** — burn LOS tokens with validator consensus
 - **Address Book** — save frequently used addresses
 - **Transaction History** — view all past transactions
 - **QR Code** — share your address via QR

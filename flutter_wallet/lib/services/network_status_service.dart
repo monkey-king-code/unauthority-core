@@ -78,7 +78,7 @@ class NetworkStatusService extends ChangeNotifier {
     // Check immediately
     _checkNetworkStatus();
 
-    // FIX I-04: 60s is sufficient for wallet status display over Tor.
+    // 60s is sufficient for wallet status display over Tor.
     _statusCheckTimer = Timer.periodic(
       const Duration(seconds: 60),
       (_) => _checkNetworkStatus(),

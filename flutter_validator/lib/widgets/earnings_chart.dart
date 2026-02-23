@@ -84,7 +84,7 @@ class _EarningsChartPainter extends CustomPainter {
 
     for (int i = 0; i < dailyHistory.length; i++) {
       final earning = dailyHistory[i].earningsCil;
-      // FIX M-02: Prevent division by zero when all earnings are equal
+      // Prevent division by zero when all earnings are equal
       final range = maxEarnings - minEarnings;
       final normalizedY = range > 0 ? (earning - minEarnings) / range : 0.5;
       final x = i * stepX;

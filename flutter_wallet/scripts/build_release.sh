@@ -31,9 +31,9 @@ set -e
 # ── Configuration ────────────────────────────────────────────────────────────
 NETWORK="${NETWORK:-testnet}"
 if [ "$NETWORK" = "mainnet" ]; then
-    VERSION="1.0.0"
+    VERSION="2.0.0"
 else
-    VERSION="1.0.0-testnet"
+    VERSION="2.0.0-testnet"
 fi
 APP_NAME="LOS Wallet"
 BUNDLE_ID="com.unauthority.wallet"
@@ -210,7 +210,7 @@ FEATURES:
   ✅ Post-Quantum Cryptography (CRYSTALS-Dilithium5)
   ✅ Automatic Tor Connectivity (zero config)
   ✅ Send/Receive LOS tokens
-  ✅ Proof-of-Burn (BTC/ETH → LOS)
+  ✅ Burn LOS tokens (validator consensus)
   ✅ 24-word BIP39 seed phrase backup
 
 NETWORK:

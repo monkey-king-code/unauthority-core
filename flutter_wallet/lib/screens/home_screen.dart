@@ -11,7 +11,6 @@ import '../config/testnet_config.dart';
 import '../widgets/network_badge.dart';
 import '../widgets/network_status_bar.dart';
 import 'send_screen.dart';
-import 'burn_screen.dart';
 import 'settings_screen.dart';
 import 'receive_screen.dart';
 import 'history_screen.dart';
@@ -289,28 +288,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
                             const SizedBox(height: 12),
 
-                            // Action Buttons Row 2: BURN / HISTORY
+                            // Action Buttons Row 2: HISTORY / NETWORK
                             Row(
                               children: [
-                                Expanded(
-                                  child: OutlinedButton.icon(
-                                    onPressed: () async {
-                                      await Navigator.push(
-                                        context,
-                                        MaterialPageRoute(
-                                            builder: (_) => const BurnScreen()),
-                                      );
-                                      _refreshBalance();
-                                    },
-                                    icon:
-                                        const Icon(Icons.local_fire_department),
-                                    label: const Text('BURN'),
-                                    style: OutlinedButton.styleFrom(
-                                      padding: const EdgeInsets.all(16),
-                                    ),
-                                  ),
-                                ),
-                                const SizedBox(width: 16),
                                 Expanded(
                                   child: OutlinedButton.icon(
                                     onPressed: () {
@@ -328,14 +308,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                     ),
                                   ),
                                 ),
-                              ],
-                            ),
-
-                            const SizedBox(height: 12),
-
-                            // Action Buttons Row 3: NETWORK / EXPLORER
-                            Row(
-                              children: [
+                                const SizedBox(width: 16),
                                 Expanded(
                                   child: OutlinedButton.icon(
                                     onPressed: () {
@@ -353,7 +326,14 @@ class _HomeScreenState extends State<HomeScreen> {
                                     ),
                                   ),
                                 ),
-                                const SizedBox(width: 16),
+                              ],
+                            ),
+
+                            const SizedBox(height: 12),
+
+                            // Action Buttons Row 3: EXPLORER / TOKENS
+                            Row(
+                              children: [
                                 Expanded(
                                   child: OutlinedButton.icon(
                                     onPressed: () {
@@ -371,14 +351,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                     ),
                                   ),
                                 ),
-                              ],
-                            ),
-
-                            const SizedBox(height: 12),
-
-                            // Action Buttons Row 4: TOKENS / DEX
-                            Row(
-                              children: [
+                                const SizedBox(width: 16),
                                 Expanded(
                                   child: OutlinedButton.icon(
                                     onPressed: () {
@@ -396,7 +369,14 @@ class _HomeScreenState extends State<HomeScreen> {
                                     ),
                                   ),
                                 ),
-                                const SizedBox(width: 16),
+                              ],
+                            ),
+
+                            const SizedBox(height: 12),
+
+                            // Action Buttons Row 4: DEX
+                            Row(
+                              children: [
                                 Expanded(
                                   child: OutlinedButton.icon(
                                     onPressed: () {

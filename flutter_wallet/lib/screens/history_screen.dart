@@ -112,12 +112,12 @@ class _HistoryScreenState extends State<HistoryScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+
     return Scaffold(
-      backgroundColor: Colors.grey[100],
       appBar: AppBar(
         title: const Text('Transaction History'),
-        backgroundColor: const Color.fromARGB(255, 0, 123, 254),
-        foregroundColor: Colors.white,
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
@@ -126,9 +126,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      const Icon(Icons.error, size: 64, color: Colors.red),
+                      Icon(Icons.error, size: 64, color: colorScheme.error),
                       const SizedBox(height: 16),
-                      Text(_error!, style: const TextStyle(color: Colors.red)),
+                      Text(_error!, style: TextStyle(color: colorScheme.error)),
                       const SizedBox(height: 16),
                       ElevatedButton(
                         onPressed: () {
@@ -144,21 +144,28 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   ),
                 )
               : _transactions.isEmpty
-                  ? const Center(
+                  ? Center(
                       child: Column(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
                           Icon(Icons.receipt_long,
-                              size: 64, color: Colors.grey),
-                          SizedBox(height: 16),
+                              size: 64,
+                              color:
+                                  colorScheme.onSurface.withValues(alpha: 0.4)),
+                          const SizedBox(height: 16),
                           Text(
                             'No transactions yet',
-                            style: TextStyle(fontSize: 18, color: Colors.grey),
+                            style: TextStyle(
+                                fontSize: 18,
+                                color: colorScheme.onSurface
+                                    .withValues(alpha: 0.6)),
                           ),
-                          SizedBox(height: 8),
+                          const SizedBox(height: 8),
                           Text(
                             'Your transaction history will appear here',
-                            style: TextStyle(color: Colors.grey),
+                            style: TextStyle(
+                                color: colorScheme.onSurface
+                                    .withValues(alpha: 0.5)),
                           ),
                         ],
                       ),
@@ -187,17 +194,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
                                     const SizedBox(height: 4),
                                     Text(
                                       'Wallet: ${_truncateAddress(_address ?? "")}',
-                                      style:
-                                          const TextStyle(color: Colors.grey),
-                                    ),
-                                    const SizedBox(height: 4),
-                                    Text(
-                                      'Source: GET /history (dedicated endpoint)',
                                       style: TextStyle(
-                                        color: Colors.blue[600],
-                                        fontSize: 12,
-                                        fontWeight: FontWeight.w500,
-                                      ),
+                                          color: colorScheme.onSurface
+                                              .withValues(alpha: 0.6)),
                                     ),
                                   ],
                                 ),
@@ -252,15 +251,16 @@ class _HistoryScreenState extends State<HistoryScreen> {
                                     const SizedBox(height: 2),
                                     Row(
                                       children: [
-                                        const Icon(Icons.note,
-                                            size: 12, color: Colors.blue),
+                                        Icon(Icons.note,
+                                            size: 12,
+                                            color: colorScheme.primary),
                                         const SizedBox(width: 4),
                                         Expanded(
                                           child: Text(
                                             tx.memo!,
-                                            style: const TextStyle(
+                                            style: TextStyle(
                                               fontSize: 11,
-                                              color: Colors.blue,
+                                              color: colorScheme.primary,
                                               fontStyle: FontStyle.italic,
                                             ),
                                             maxLines: 1,
@@ -278,9 +278,10 @@ class _HistoryScreenState extends State<HistoryScreen> {
                                                 .fromMillisecondsSinceEpoch(
                                                     tx.timestamp * 1000))
                                         : 'Pending',
-                                    style: const TextStyle(
+                                    style: TextStyle(
                                       fontSize: 11,
-                                      color: Colors.grey,
+                                      color: colorScheme.onSurface
+                                          .withValues(alpha: 0.5),
                                     ),
                                   ),
                                 ],
@@ -288,7 +289,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
                               trailing: Icon(
                                 Icons.arrow_forward_ios,
                                 size: 16,
-                                color: Colors.grey[400],
+                                color: colorScheme.onSurface
+                                    .withValues(alpha: 0.3),
                               ),
                             ),
                           );

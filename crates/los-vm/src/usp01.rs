@@ -380,7 +380,7 @@ pub struct Usp01Token {
     pub allowances: BTreeMap<(String, String), u128>,
     /// Designated bridge operator for wrapped assets (empty = no bridge)
     pub bridge_operator: String,
-    /// SECURITY FIX C-19: Set of already-used WrapMint proofs.
+    /// Set of already-used WrapMint proofs.
     /// Prevents replay attacks where the same deposit proof is submitted
     /// multiple times to mint tokens without additional backing.
     #[serde(default)]
@@ -658,12 +658,15 @@ impl Usp01Token {
                         events: Vec::new(),
                     };
                 }
-                // SECURITY FIX C-19: Reject duplicate proofs (replay protection)
+                // Reject duplicate proofs (replay protection)
                 if self.used_proofs.contains(&proof) {
                     return Usp01Response {
                         success: false,
                         data: None,
-                        message: format!("WrapMint: proof already used (replay rejected): {}", proof),
+                        message: format!(
+                            "WrapMint: proof already used (replay rejected): {}",
+                            proof
+                        ),
                         events: Vec::new(),
                     };
                 }

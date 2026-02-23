@@ -1,4 +1,4 @@
-# Technical Whitepaper — Unauthority (LOS) v1.0.13
+# Technical Whitepaper — Unauthority (LOS) v2.0.0
 
 **Lattice Of Sovereignty: A Post-Quantum, Privacy-First Block-Lattice Blockchain**
 
@@ -13,8 +13,8 @@
 3. [Block-Lattice Architecture](#block-lattice-architecture)
 4. [Consensus: aBFT](#consensus-abft)
 5. [Token Economics](#token-economics)
-6. [Proof-of-Burn Bridge](#proof-of-burn-bridge)
-7. [Oracle Consensus](#oracle-consensus)
+6. [PoW Mining Distribution](#pow-mining-distribution)
+7. [Smart Contract Oracle](#smart-contract-oracle)
 8. [Validator Rewards](#validator-rewards)
 9. [Linear Voting & Security](#linear-voting--security)
 10. [Slashing & Accountability](#slashing--accountability)
@@ -35,7 +35,7 @@ Key differentiators:
 - **Post-quantum** — Dilithium5 (NIST FIPS 204) with 256-bit classical security
 - **Deterministic** — all consensus math uses u128 integer arithmetic, zero floating-point
 - **Sybil-neutral** — linear voting (1 LOS = 1 vote), no concentration advantage
-- **Interoperable** — Proof-of-Burn bridges for wrapped assets (wBTC, wETH)
+- **Interoperable** — USP-01 token standard for wrapped assets (wBTC, wETH) via WASM DEX
 
 ---
 
@@ -71,8 +71,8 @@ Each block references its `previous` block hash, forming per-account chains. Cro
 |---|---|---|
 | **Send** | Debit from sender's balance | Recipient address |
 | **Receive** | Credit to receiver's balance | Hash of the Send block |
-| **Mint** | Token creation (genesis or burn reward) | Source reference |
-| **Burn** | Proof-of-Burn event recording | External TX hash |
+| **Mint** | Token creation (genesis or PoW reward) | Source reference (MINE:epoch:nonce) |
+| **Burn** | Token destruction | Burn reference |
 | **Change** | Representative/validator delegation | New representative |
 
 ### Block Fields
@@ -178,7 +178,7 @@ If the leader fails (timeout after 5,000ms), a **view change** is triggered:
 
 ### Public Supply Distribution
 
-The public allocation (21,158,413 LOS) is distributed exclusively through Proof-of-Burn:
+The public allocation (21,158,413 LOS) is distributed exclusively through PoW mining:
 
 ```
 Public Supply Cap = 21,158,413 × 10^11 CIL = 2,115,841,300,000,000,000 CIL
@@ -188,86 +188,40 @@ No other mechanism exists to create new tokens. Once the public supply is fully 
 
 ---
 
-## Proof-of-Burn Bridge
+## PoW Mining Distribution
 
 ### Mechanism
 
-Users burn external cryptocurrency (BTC, ETH) to receive LOS tokens:
+Miners run full validator nodes with `--mine` flag and compute SHA3-256 proofs:
 
-1. User sends BTC/ETH to a provably unspendable dead address
-2. User submits burn transaction hash to an Unauthority validator
-3. Validators independently verify the burn on the source chain
-4. Oracle consensus determines the USD value at burn time
-5. LOS yield calculated based on remaining public supply
-6. Once ≥2 validators confirm, a Mint block is created
+1. Miner runs `los-node --mine` (full validator required)
+2. Background thread grinds SHA3-256: `SHA3(LOS_MINE_V1 || chain_id || address || epoch || nonce)`
+3. Hash must have N leading zero bits (difficulty auto-adjusts)
+4. Successful proof creates a Mint block with `MINE:epoch:nonce` link format
+5. Mint block broadcast via `MINE_BLOCK:{json}` gossip message
+6. All nodes verify PoW proof before accepting
 
-### Yield Formula (Integer-Only)
+### Mining Parameters
 
-```
-yield_cil = (burn_amount_usd × remaining_supply) / PUBLIC_SUPPLY_CAP
+| Parameter | Mainnet | Testnet |
+|---|---|---|
+| Epoch Duration | 3,600 sec (1 hour) | 120 sec (2 min) |
+| Reward per Epoch | 100 LOS | 100 LOS |
+| Halving Interval | 8,760 epochs (~1 year) | 8,760 epochs |
+| Initial Difficulty | 20 leading zero bits | 20 bits |
+| Deduplication | 1 reward per (address, epoch) | Same |
 
-where:
-  burn_amount_usd  = USD value in $0.01 units (integer)
-  remaining_supply = remaining public supply in CIL
-  PUBLIC_SUPPLY_CAP = 21,158,413 × 10^11 CIL
-```
+### Difficulty Adjustment
 
-All arithmetic uses `u128` with `checked_mul` to prevent overflow. Maximum values:
-- `burn_amount_usd`: ~10^12 (practical max: burning $10B worth)
-- `remaining_supply`: ~10^22 (at genesis)
-- Product: ~10^34 (fits in u128, max ~10^38)
+Difficulty auto-adjusts based on active miner count to maintain fair distribution.
+More miners = higher difficulty = harder to find valid nonce.
 
-### Scarcity Curve
+### Fair Distribution
 
-As more LOS is distributed, the yield per dollar burned decreases:
-
-```
-At 0% distributed:  yield_cil ≈ burn_usd (1:1 ratio)
-At 50% distributed: yield_cil ≈ burn_usd × 0.5
-At 90% distributed: yield_cil ≈ burn_usd × 0.1
-At 99% distributed: yield_cil ≈ burn_usd × 0.01
-```
-
-This creates a fair, market-driven token distribution — early participants get better rates, but anyone can participate at any time.
-
----
-
-## Oracle Consensus
-
-### Purpose
-
-The decentralized oracle provides real-time price feeds (ETH/USD, BTC/USD) needed for Proof-of-Burn yield calculations. All prices are determined by validator consensus — no external oracle service.
-
-### Price Format
-
-All prices stored as **micro-USD (u128)**:
-
-```
-1 USD = 1,000,000 micro-USD
-$2,500.00 ETH = 2,500,000,000 micro-USD
-$83,000.00 BTC = 83,000,000,000 micro-USD
-```
-
-### Aggregation: BFT Median
-
-```
-1. Each validator fetches ETH/BTC prices from public APIs
-2. Submits signed price to peers (ORACLE_SUBMIT message)
-3. Within 60-second window, collect all submissions
-4. Sort prices, calculate median:
-   - Odd count: exact middle element
-   - Even count: integer average of two middle elements
-5. Reject outliers: |price - median| / median > 20%
-6. Minimum 2 valid submissions required (BFT: 2f+1 for n≥3)
-```
-
-### Security
-
-- Zero-price submissions are rejected
-- Outlier threshold: 20% (2,000 basis points) deviation from median
-- Uses u128 integer — cannot be NaN, Infinity, or negative
-- Signed with Dilithium5 — submissions are attributable
-- Oracle manipulation triggers slashing
+- No ICO, no pre-sale, no VC allocation
+- ~96.5% of supply distributed via open PoW mining
+- Anyone with a full node can mine
+- No external mining API — must run a validator node
 
 ---
 
@@ -431,9 +385,9 @@ Unauthority uses **CRYSTALS-Dilithium** at security level 5 (NIST FIPS 204):
 | Sign time | ~1ms |
 | Verify time | ~0.5ms |
 
-### Hash Function: SHA-3 (Keccak)
+### Hash Function: SHA3-256 (NIST FIPS 202)
 
-All block hashing uses SHA-3 (FIPS 202):
+All block hashing uses SHA3-256:
 
 ```
 block_hash = SHA3-256(account || previous || block_type || amount || ...)

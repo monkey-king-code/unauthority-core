@@ -4,8 +4,8 @@
 
 | Version | Supported |
 |---|---|
-| 1.0.13 (current) | Yes |
-| < 1.0.13 | No |
+| 2.0.0 (current) | Yes |
+| < 2.0.0 | No |
 
 ## Reporting a Vulnerability
 
@@ -49,7 +49,7 @@ If you discover a security vulnerability in Unauthority (LOS), please report it 
 ### Cryptography
 
 - **Signatures:** CRYSTALS-Dilithium5 (NIST FIPS 204, 256-bit classical security)
-- **Hashing:** SHA-3 (Keccak, FIPS 202)
+- **Hashing:** SHA-3 (NIST FIPS 202)
 - **Key Derivation:** BIP39 mnemonic → SHA-3 expansion → Dilithium5 keygen
 
 ### Consensus Safety

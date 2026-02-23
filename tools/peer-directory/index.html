@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LOS Peer Directory — Unauthority Network</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,monospace;background:#0d1117;color:#c9d1d9;min-height:100vh}
+.container{max-width:960px;margin:0 auto;padding:24px 16px}
+
+/* ── Header ── */
+.header{text-align:center;margin-bottom:28px}
+h1{font-size:28px;color:#58a6ff;margin-bottom:4px;letter-spacing:-0.5px}
+h1 span{color:#3fb950}
+.subtitle{color:#8b949e;font-size:13px}
+
+/* ── Notice Box ── */
+.notice{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px;margin-bottom:24px;text-align:center;color:#8b949e;font-size:13px;line-height:1.7}
+.notice strong{color:#c9d1d9}
+.notice code{background:#0d1117;padding:2px 6px;border-radius:4px;color:#79c0ff;font-size:12px}
+
+/* ── Status Bar ── */
+.status-bar{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-bottom:20px}
+.status-bar .pill{background:#161b22;border:1px solid #30363d;border-radius:20px;padding:6px 16px;font-size:12px;color:#8b949e;display:flex;align-items:center;gap:6px}
+.status-bar .pill .num{color:#f0f6fc;font-weight:700;font-size:14px}
+.status-bar .pill .num.green{color:#3fb950}
+.status-bar .pill .num.blue{color:#58a6ff}
+.status-bar .pill .num.yellow{color:#d29922}
+
+/* ── Progress/Loading ── */
+.loading-bar{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:14px;margin-bottom:20px;text-align:center}
+.loading-bar .spinner{display:inline-block;width:14px;height:14px;border:2px solid #30363d;border-top-color:#58a6ff;border-radius:50%;animation:spin .8s linear infinite;vertical-align:middle;margin-right:8px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.loading-bar .progress-text{color:#8b949e;font-size:13px}
+.loading-bar .progress-text em{color:#58a6ff;font-style:normal}
+.loading-bar.done{border-color:#238636}
+.loading-bar.done .progress-text{color:#3fb950}
+.loading-bar.error{border-color:#da3633}
+.loading-bar.error .progress-text{color:#f85149}
+
+/* ── Table ── */
+table{width:100%;border-collapse:collapse;background:#161b22;border:1px solid #30363d;border-radius:8px;overflow:hidden}
+th{text-align:left;padding:10px 14px;background:#21262d;color:#8b949e;font-size:11px;text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid #30363d}
+td{padding:10px 14px;border-bottom:1px solid #21262d;font-size:13px}
+tr:last-child td{border-bottom:none}
+tr:hover{background:#1c2128}
+tr.offline{opacity:.45}
+tr.offline:hover{opacity:.7}
+.mono{font-family:'SF Mono','Fira Code','Cascadia Code',monospace;font-size:12px}
+
+/* ── Status Dots ── */
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:middle}
+.dot.on{background:#3fb950;box-shadow:0 0 8px #3fb95066}
+.dot.off{background:#484f58}
+
+/* ── Badges ── */
+.badge{padding:2px 8px;border-radius:12px;font-size:11px;font-weight:500;white-space:nowrap}
+.badge.onion{background:#2d1f4e;color:#a371f7}
+.badge.clearnet{background:#0d2818;color:#3fb950}
+.badge.bootstrap{background:#341a00;color:#d29922;margin-left:4px}
+
+/* ── Copy Button ── */
+.host-cell{position:relative;display:flex;align-items:center;gap:4px}
+.host-cell span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:320px}
+.copy-btn{background:none;border:1px solid #30363d;border-radius:4px;cursor:pointer;font-size:11px;opacity:.4;padding:2px 6px;color:#c9d1d9;transition:all .15s}
+.copy-btn:hover{opacity:1;border-color:#58a6ff;background:#161b22}
+
+/* ── Empty State ── */
+.empty{text-align:center;padding:48px 20px;color:#8b949e}
+.empty .icon{font-size:36px;margin-bottom:12px}
+.empty p{font-size:14px;margin-bottom:6px}
+.empty .hint{font-size:12px;color:#484f58}
+
+/* ── Bootstrap Node List ── */
+.node-sources{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px;margin-bottom:20px}
+.node-sources h3{color:#8b949e;font-size:12px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px}
+.source-row{display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12px}
+.source-row .sdot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
+.source-row .sdot.ok{background:#3fb950}
+.source-row .sdot.fail{background:#f85149}
+.source-row .sdot.wait{background:#484f58}
+.source-row .saddr{color:#8b949e;font-family:'SF Mono',monospace;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.source-row .scount{color:#58a6ff;font-size:11px;margin-left:auto;white-space:nowrap}
+
+/* ── Footer ── */
+footer{margin-top:32px;text-align:center;color:#484f58;font-size:12px;line-height:1.8}
+footer a{color:#58a6ff;text-decoration:none}
+footer a:hover{text-decoration:underline}
+
+/* ── Toast ── */
+.toast{position:fixed;bottom:24px;right:24px;background:#238636;color:#fff;padding:10px 20px;border-radius:8px;display:none;font-size:13px;z-index:100;box-shadow:0 4px 12px #00000066}
+
+/* ── Responsive ── */
+@media(max-width:640px){
+  .container{padding:12px 8px}
+  td,th{padding:6px 8px;font-size:12px}
+  .host-cell span{max-width:180px}
+  .mono{font-size:11px}
+  .source-row .saddr{max-width:200px}
+}
+</style>
+</head>
+<body>
+<div class="container">
+
+  <div class="header">
+    <h1>🔗 LOS <span>Peer Directory</span></h1>
+    <p class="subtitle">Unauthority Network — Decentralized Validator Discovery</p>
+  </div>
+
+  <div class="notice">
+    <strong>🆕 New user?</strong> Copy any <strong>online</strong> host address below and paste it into your wallet or validator app under <strong>Settings → Add Custom Node</strong>.
+    <br>This page fetches live data directly from validator nodes — <strong>no central server</strong>.
+  </div>
+
+  <!-- Status Bar -->
+  <div class="status-bar">
+    <div class="pill"><span class="num green" id="countOnline">—</span> Online</div>
+    <div class="pill"><span class="num blue" id="countTotal">—</span> Total Known</div>
+    <div class="pill"><span class="num yellow" id="countSources">—</span> Sources OK</div>
+    <div class="pill">⏱ <span id="lastUpdate">—</span></div>
+  </div>
+
+  <!-- Loading Bar -->
+  <div class="loading-bar" id="loadingBar">
+    <span class="spinner"></span>
+    <span class="progress-text">Connecting to bootstrap validators via Tor... <em id="fetchProgress">0/4</em></span>
+  </div>
+
+  <!-- Bootstrap Sources -->
+  <div class="node-sources" id="sourcesBox">
+    <h3>📡 Bootstrap Validator Sources</h3>
+    <div id="sourcesList"></div>
+  </div>
+
+  <!-- Peer Table (populated by JS) -->
+  <div id="tableContainer">
+    <div class="empty">
+      <div class="icon">⏳</div>
+      <p>Waiting for data from validators...</p>
+      <p class="hint">This page will fetch from 4 bootstrap validators over Tor. First load may take 10-30s.</p>
+    </div>
+  </div>
+
+  <footer>
+    <p>LOS Peer Directory — <a href="https://github.com/AurelMoonworker/unauthority-core" target="_blank">GitHub</a></p>
+    <p>100% client-side. No backend. No tracking. Data fetched directly from validators.</p>
+    <p>Auto-refresh every 90 seconds · <a href="#" onclick="fetchAll();return false">Refresh Now</a></p>
+  </footer>
+
+</div>
+<div class="toast" id="toast">✅ Copied!</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+//  LOS PEER DIRECTORY — Pure Client-Side JavaScript
+//  Fetches GET /directory/api/active from bootstrap validators
+//  No server needed. Just serve this HTML file on .onion.
+// ═══════════════════════════════════════════════════════════════
+
+const BOOTSTRAP_NODES = [
+  {
+    url: 'http://f3zfmhvverdljhddhxvdnkibrajd2cbolrfq4z6a5y2ifprf2xh34nid.onion:3030',
+    label: 'Bootstrap V1',
+  },
+  {
+    url: 'http://xchdcoebass6ewt7astm2ksacr55s7nd6l74qcmvkrm37t7pnqqf32qd.onion:3031',
+    label: 'Bootstrap V2',
+  },
+  {
+    url: 'http://7v5lqrgevfeyhb6aomt75dbagnkmxrthg6qehkxa2fv5ycxxam7e25qd.onion:3032',
+    label: 'Bootstrap V3',
+  },
+  {
+    url: 'http://7dbvneima7h5nc34x2c7frgyq64h64ipbes43pkd4lmc7hnfxzwl3lyd.onion:3033',
+    label: 'Bootstrap V4',
+  },
+];
+
+const FETCH_TIMEOUT = 30000;   // 30s per node (Tor is slow)
+const REFRESH_INTERVAL = 90000; // 90s auto-refresh
+
+// ── State ──
+let allPeers = {};         // keyed by host URL
+let sourceStatus = {};     // keyed by source URL
+let fetchTimer = null;
+
+// ═══════════════════════════════════════════════════════════════
+//  INIT
+// ═══════════════════════════════════════════════════════════════
+
+document.addEventListener('DOMContentLoaded', () => {
+  renderSourcesList();
+  fetchAll();
+  fetchTimer = setInterval(fetchAll, REFRESH_INTERVAL);
+});
+
+// ═══════════════════════════════════════════════════════════════
+//  FETCH FROM ALL BOOTSTRAP NODES
+// ═══════════════════════════════════════════════════════════════
+
+async function fetchAll() {
+  const bar = document.getElementById('loadingBar');
+  const progress = document.getElementById('fetchProgress');
+  bar.className = 'loading-bar';
+  bar.style.display = 'block';
+
+  let done = 0;
+  let ok = 0;
+  const total = BOOTSTRAP_NODES.length;
+
+  // Reset source status to "waiting"
+  BOOTSTRAP_NODES.forEach(n => {
+    sourceStatus[n.url] = { status: 'wait', count: 0 };
+  });
+  renderSourcesList();
+
+  // Fetch all in parallel
+  const promises = BOOTSTRAP_NODES.map(async (node) => {
+    try {
+      const resp = await fetchWithTimeout(
+        node.url + '/directory/api/active',
+        FETCH_TIMEOUT
+      );
+      const data = await resp.json();
+
+      // The source itself is alive
+      addPeer(node.url, '', guessTransport(node.url), guessPort(node.url), true, node.label);
+
+      // Process reported peers
+      let count = 0;
+      if (data.peers && Array.isArray(data.peers)) {
+        data.peers.forEach(p => {
+          if (p.host) {
+            addPeer(
+              p.host,
+              p.address || '',
+              p.transport || guessTransport(p.host),
+              p.rest_port || guessPort(p.host),
+              true,
+              node.label
+            );
+            count++;
+          }
+        });
+      }
+
+      sourceStatus[node.url] = { status: 'ok', count: count };
+      ok++;
+    } catch (e) {
+      sourceStatus[node.url] = { status: 'fail', count: 0 };
+      // Mark the source as offline if we had it
+      if (allPeers[node.url]) {
+        allPeers[node.url].active = false;
+      }
+    }
+
+    done++;
+    progress.textContent = done + '/' + total;
+    renderSourcesList();
+    renderTable();
+  });
+
+  await Promise.allSettled(promises);
+
+  // Update loading bar
+  if (ok > 0) {
+    bar.className = 'loading-bar done';
+    bar.innerHTML = '<span class="progress-text">✅ Fetched from ' + ok + '/' + total + ' validator(s) — next refresh in 90s</span>';
+  } else {
+    bar.className = 'loading-bar error';
+    bar.innerHTML = '<span class="progress-text">⚠️ Could not reach any validator. Make sure you are using <strong>Tor Browser</strong>.</span>';
+  }
+
+  document.getElementById('countSources').textContent = ok;
+  document.getElementById('lastUpdate').textContent = formatTime(new Date());
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  PEER MANAGEMENT
+// ═══════════════════════════════════════════════════════════════
+
+function addPeer(host, address, transport, port, active, source) {
+  const clean = host.replace(/\/+$/, '');
+  if (!allPeers[clean]) {
+    allPeers[clean] = {
+      host: clean,
+      address: address,
+      transport: transport,
+      rest_port: port,
+      active: active,
+      first_seen: new Date().toISOString(),
+      last_seen: active ? new Date().toISOString() : null,
+      source: source,
+      is_bootstrap: BOOTSTRAP_NODES.some(b => clean === b.url.replace(/\/+$/, '')),
+    };
+  } else {
+    const p = allPeers[clean];
+    if (active) {
+      p.active = true;
+      p.last_seen = new Date().toISOString();
+    }
+    if (address && !p.address) p.address = address;
+    if (source) p.source = source;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  RENDER TABLE
+// ═══════════════════════════════════════════════════════════════
+
+function renderTable() {
+  const container = document.getElementById('tableContainer');
+  const peers = Object.values(allPeers);
+
+  if (peers.length === 0) return; // keep empty state
+
+  // Sort: active first, then by last_seen desc
+  peers.sort((a, b) => {
+    if (a.active !== b.active) return b.active ? 1 : -1;
+    if (a.last_seen && b.last_seen) return b.last_seen.localeCompare(a.last_seen);
+    return 0;
+  });
+
+  const online = peers.filter(p => p.active).length;
+  document.getElementById('countOnline').textContent = online;
+  document.getElementById('countTotal').textContent = peers.length;
+
+  let html = '<table><thead><tr>';
+  html += '<th>Status</th><th>Address</th><th>Host (copy this)</th><th>Type</th><th>Last Seen</th>';
+  html += '</tr></thead><tbody>';
+
+  peers.forEach(p => {
+    const rowClass = p.active ? '' : 'offline';
+    const dot = p.active
+      ? '<span class="dot on"></span> Online'
+      : '<span class="dot off"></span> Offline';
+
+    const transportBadge = p.transport === 'onion'
+      ? '<span class="badge onion">🧅 onion</span>'
+      : '<span class="badge clearnet">🌐 clearnet</span>';
+
+    const bootstrapBadge = p.is_bootstrap
+      ? '<span class="badge bootstrap">⭐ bootstrap</span>'
+      : '';
+
+    const addrShort = shortAddr(p.address);
+    const hostShort = shortHost(p.host);
+    const lastSeen = p.last_seen ? formatTime(new Date(p.last_seen)) : '—';
+
+    html += '<tr class="' + rowClass + '">';
+    html += '<td>' + dot + '</td>';
+    html += '<td class="mono" title="' + esc(p.address) + '">' + esc(addrShort) + '</td>';
+    html += '<td class="mono"><div class="host-cell">';
+    html += '<span title="' + esc(p.host) + '">' + esc(hostShort) + '</span>';
+    html += '<button class="copy-btn" onclick="copyText(\'' + esc(p.host) + '\')">📋</button>';
+    html += '</div></td>';
+    html += '<td>' + transportBadge + bootstrapBadge + '</td>';
+    html += '<td class="mono">' + lastSeen + '</td>';
+    html += '</tr>';
+  });
+
+  html += '</tbody></table>';
+  container.innerHTML = html;
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  RENDER BOOTSTRAP SOURCES LIST
+// ═══════════════════════════════════════════════════════════════
+
+function renderSourcesList() {
+  const list = document.getElementById('sourcesList');
+  let html = '';
+
+  BOOTSTRAP_NODES.forEach(node => {
+    const s = sourceStatus[node.url] || { status: 'wait', count: 0 };
+    const dotClass = s.status === 'ok' ? 'ok' : (s.status === 'fail' ? 'fail' : 'wait');
+    const statusText = s.status === 'ok'
+      ? '→ ' + s.count + ' peer(s)'
+      : (s.status === 'fail' ? '→ unreachable' : '→ waiting...');
+
+    const addrShort = node.url.replace('http://', '').replace(/\.onion.*/, '.onion');
+
+    html += '<div class="source-row">';
+    html += '<span class="sdot ' + dotClass + '"></span>';
+    html += '<span class="saddr" title="' + esc(node.url) + '">' + esc(node.label) + ' — ' + esc(addrShort) + '</span>';
+    html += '<span class="scount">' + statusText + '</span>';
+    html += '</div>';
+  });
+
+  list.innerHTML = html;
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  HELPERS
+// ═══════════════════════════════════════════════════════════════
+
+function fetchWithTimeout(url, ms) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  return fetch(url, { signal: controller.signal }).finally(() => clearTimeout(timer));
+}
+
+function guessTransport(url) {
+  return url.includes('.onion') ? 'onion' : 'clearnet';
+}
+
+function guessPort(url) {
+  const m = url.match(/:(\d+)\/?$/);
+  return m ? parseInt(m[1]) : 80;
+}
+
+function shortAddr(addr) {
+  if (!addr || addr.length < 16) return addr || '—';
+  return addr.slice(0, 8) + '…' + addr.slice(-6);
+}
+
+function shortHost(host) {
+  // Remove http:// 
+  let h = host.replace(/^https?:\/\//, '');
+  if (h.length > 48) return h.slice(0, 24) + '…' + h.slice(-16);
+  return h;
+}
+
+function formatTime(d) {
+  const pad = n => String(n).padStart(2, '0');
+  return pad(d.getUTCMonth() + 1) + '-' + pad(d.getUTCDate()) + ' '
+    + pad(d.getUTCHours()) + ':' + pad(d.getUTCMinutes()) + ' UTC';
+}
+
+function esc(s) {
+  if (!s) return '';
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+function copyText(text) {
+  navigator.clipboard.writeText(text).then(() => {
+    const t = document.getElementById('toast');
+    t.style.display = 'block';
+    setTimeout(() => { t.style.display = 'none'; }, 1500);
+  });
+}
+</script>
+</body>
+</html>

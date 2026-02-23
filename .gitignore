@@ -188,6 +188,14 @@ dev_docs/
 # Internal development docs
 docs/internal/
 
+# Local regression test scripts & reports
+regression_test*.sh
+regression_report*.txt
+restart_*.sh
+start_clearnet.sh
+start_mixed_testnet.sh
+typescript
+
 # Session reports & work tracking
 *_COMPLETE.md
 *_COMPLETION.md

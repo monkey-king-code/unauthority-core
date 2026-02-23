@@ -37,10 +37,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   // Reward countdown state
   Map<String, dynamic>? _rewardInfo;
+  Map<String, dynamic>? _miningInfo; // PoW mining stats from local node
+  Map<String, dynamic>? _slashingInfo; // Slashing status for this validator
+  Map<String, dynamic>? _consensusInfo; // Consensus state
+  Map<String, dynamic>? _syncStatus; // Sync progress
+  Map<String, dynamic>? _supplyInfo; // Total supply stats
   int _epochRemainingSecs = 0;
   Timer? _countdownTimer;
   Timer? _autoRefreshTimer;
   bool _isDashboardLoading = false; // Prevent concurrent _loadDashboard calls
+  DateTime? _lastMonitoringLoad; // Throttle monitoring API calls
 
   @override
   void initState() {
@@ -142,8 +148,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     try {
       final apiService = context.read<ApiService>();
+      final nodeService = context.read<NodeProcessService>();
 
-      // FIX C12-05: Parallelize independent API calls (critical over Tor)
+      // PHASE 1: Load core data (required for dashboard render)
+      // These 7 calls are essential — dashboard can't render without them.
       final results = await Future.wait([
         apiService.getNodeInfo(),
         apiService.getHealth(),
@@ -151,10 +159,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
         apiService.getRecentBlocks(),
         apiService.getPeers(),
         apiService.getRewardInfo().catchError((_) => <String, dynamic>{}),
+        apiService
+            .getMiningInfo(localUrl: nodeService.localApiUrl)
+            .catchError((_) => <String, dynamic>{}),
       ]);
 
       if (!mounted) return;
       final rewardData = results[5] as Map<String, dynamic>;
+      final miningData = results[6] as Map<String, dynamic>;
       setState(() {
         _nodeInfo = results[0] as Map<String, dynamic>;
         _health = results[1] as Map<String, dynamic>;
@@ -162,19 +174,31 @@ class _DashboardScreenState extends State<DashboardScreen> {
         _recentBlocks = results[3] as List<BlockInfo>;
         _peers = results[4] as List<String>;
         _rewardInfo = rewardData.isNotEmpty ? rewardData : null;
+        _miningInfo = miningData.isNotEmpty ? miningData : null;
         if (_rewardInfo != null && _rewardInfo!['epoch'] != null) {
           final remaining =
               (_rewardInfo!['epoch']['epoch_remaining_secs'] as num?)
                       ?.toInt() ??
                   0;
-          // Only update countdown if API returned a positive value.
-          // If the API returns 0 (epoch boundary), keep the current countdown
-          // so the anti-stall timer will re-fetch in a few seconds when the
-          // new epoch has started and remaining_secs is positive again.
           if (remaining > 0) {
+            // API returned a positive value — use it directly.
             _epochRemainingSecs = remaining;
             _zeroTickCount = 0; // Reset stall counter on good data
+          } else if (_epochRemainingSecs == 0) {
+            // API returned 0 AND countdown is already at 0 — epoch boundary.
+            // Use epoch_duration_secs as fallback so countdown recovers.
+            final duration =
+                (_rewardInfo!['epoch']['epoch_duration_secs'] as num?)
+                        ?.toInt() ??
+                    0;
+            if (duration > 0) {
+              _epochRemainingSecs = duration;
+              _zeroTickCount = 0;
+              losLog(
+                  '📊 [DashboardScreen] Countdown stuck at 0 — reset to epoch duration: ${duration}s');
+            }
           }
+          // else: remaining == 0 but countdown is still counting down — skip
         }
         _error = null;
         _isLoading = false;
@@ -182,6 +206,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
       });
       losLog(
           '📊 [DashboardScreen._loadDashboard] Success: validators=${_validators.length}, block_height=${_nodeInfo?['block_height']}, peers=${_peers.length}');
+
+      // PHASE 2: Load monitoring data asynchronously (non-blocking)
+      // These endpoints may not exist on all nodes or return empty — don't
+      // block the dashboard spinner for them. Throttled to every 2 minutes
+      // to reduce Tor SOCKS5 proxy load (4 extra API calls each time).
+      final now = DateTime.now();
+      final shouldLoadMonitoring = _lastMonitoringLoad == null ||
+          now.difference(_lastMonitoringLoad!).inSeconds >= 120;
+      if (shouldLoadMonitoring) {
+        _lastMonitoringLoad = now;
+        _loadMonitoringData(apiService);
+      }
     } catch (e) {
       if (!mounted) {
         _isDashboardLoading = false;
@@ -198,6 +234,37 @@ class _DashboardScreenState extends State<DashboardScreen> {
       });
     } finally {
       _isDashboardLoading = false;
+    }
+  }
+
+  /// Load monitoring cards data asynchronously — does NOT block the dashboard.
+  /// These endpoints (sync, consensus, supply, slashing) may not exist on all
+  /// nodes or may return empty `{}`. We fire-and-forget and update the UI
+  /// when results arrive.
+  Future<void> _loadMonitoringData(ApiService apiService) async {
+    try {
+      final monitorResults = await Future.wait([
+        apiService.getConsensusInfo().catchError((_) => <String, dynamic>{}),
+        apiService.getSyncStatus().catchError((_) => <String, dynamic>{}),
+        apiService.getSupply().catchError((_) => <String, dynamic>{}),
+        (_myAddress != null
+                ? apiService.getSlashingForAddress(_myAddress!)
+                : Future.value(<String, dynamic>{}))
+            .catchError((_) => <String, dynamic>{}),
+      ]);
+      if (!mounted) return;
+      final consensusData = monitorResults[0];
+      final syncData = monitorResults[1];
+      final supplyData = monitorResults[2];
+      final slashingData = monitorResults[3];
+      setState(() {
+        _consensusInfo = consensusData.isNotEmpty ? consensusData : null;
+        _syncStatus = syncData.isNotEmpty ? syncData : null;
+        _supplyInfo = supplyData.isNotEmpty ? supplyData : null;
+        _slashingInfo = slashingData.isNotEmpty ? slashingData : null;
+      });
+    } catch (e) {
+      losLog('📊 [DashboardScreen] Monitoring data load failed: $e');
     }
   }
 
@@ -444,6 +511,34 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             // Reward Countdown Card
                             if (_rewardInfo != null)
                               _buildRewardCountdownCard(),
+
+                            const SizedBox(height: 16),
+
+                            // PoW Mining Card
+                            Consumer<NodeProcessService>(
+                              builder: (ctx, node, _) {
+                                if (_miningInfo != null) {
+                                  return _buildMiningInfoCard(node);
+                                }
+                                if (node.isRunning && node.enableMining) {
+                                  return Card(
+                                    child: Padding(
+                                      padding: const EdgeInsets.all(16),
+                                      child: Row(children: [
+                                        const SizedBox(
+                                            width: 20,
+                                            height: 20,
+                                            child: CircularProgressIndicator(
+                                                strokeWidth: 2)),
+                                        const SizedBox(width: 12),
+                                        const Text('Loading mining stats...'),
+                                      ]),
+                                    ),
+                                  );
+                                }
+                                return const SizedBox.shrink();
+                              },
+                            ),
 
                             const SizedBox(height: 16),
 
@@ -725,11 +820,126 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             // Network Tokens & DEX Overview
                             const SizedBox(height: 16),
                             const NetworkTokensCard(),
+
+                            // ──── Monitoring Section ────────────────────
+
+                            // Slashing Status
+                            if (_slashingInfo != null &&
+                                _slashingInfo!.isNotEmpty) ...[
+                              const SizedBox(height: 16),
+                              _buildSlashingCard(),
+                            ],
+
+                            // Consensus State
+                            if (_consensusInfo != null &&
+                                _consensusInfo!.isNotEmpty) ...[
+                              const SizedBox(height: 16),
+                              _buildConsensusCard(),
+                            ],
+
+                            // Supply Info
+                            if (_supplyInfo != null &&
+                                _supplyInfo!.isNotEmpty) ...[
+                              const SizedBox(height: 16),
+                              _buildSupplyCard(),
+                            ],
+
+                            // Sync Status — always show when node info available
+                            if (_nodeInfo != null) ...[
+                              const SizedBox(height: 16),
+                              _buildSyncCard(),
+                            ],
                           ],
                         ),
                       ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildMiningInfoCard(NodeProcessService node) {
+    final m = _miningInfo!;
+    final epoch = (m['epoch'] as num?)?.toInt() ?? 0;
+    final difficultyBits = (m['difficulty_bits'] as num?)?.toInt() ?? 0;
+    final rewardLos = (m['reward_per_epoch_los'] as num?)?.toInt() ?? 0;
+    final minersThisEpoch = (m['miners_this_epoch'] as num?)?.toInt() ?? 0;
+    final epochRemainingSecs =
+        (m['epoch_remaining_secs'] as num?)?.toInt() ?? 0;
+    final remainingSupplyLos =
+        (m['remaining_supply_los'] as num?)?.toInt() ?? 0;
+
+    // Parse remaining_supply_cil (sent as string by Rust due to u128 size)
+    final remainingSupplyCil =
+        int.tryParse(m['remaining_supply_cil']?.toString() ?? '0') ?? 0;
+    final remainingDisplay = remainingSupplyCil > 0
+        ? BlockchainConstants.cilToLosString(remainingSupplyCil)
+        : '$remainingSupplyLos';
+
+    final chainId = m['chain_id']?.toString() ?? 'unknown';
+    final isMining = node.enableMining;
+
+    return Card(
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(
+          color: isMining ? Colors.orange.withValues(alpha: 0.5) : Colors.grey,
+          width: 1,
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  Icons.hardware,
+                  size: 24,
+                  color: isMining ? Colors.orange : Colors.grey,
+                ),
+                const SizedBox(width: 8),
+                const Text(
+                  'PoW Mining',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+                const Spacer(),
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: isMining
+                        ? Colors.orange.withValues(alpha: 0.15)
+                        : Colors.grey.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                        color: isMining ? Colors.orange : Colors.grey,
+                        width: 1),
+                  ),
+                  child: Text(
+                    isMining ? '⛏ MINING' : 'INACTIVE',
+                    style: TextStyle(
+                      color: isMining ? Colors.orange : Colors.grey,
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const Divider(),
+            _buildInfoRow('Epoch', '#$epoch'),
+            _buildInfoRow(
+                'Next Reward In', _formatCountdown(epochRemainingSecs)),
+            _buildInfoRow('Difficulty', '$difficultyBits leading zero bits'),
+            _buildInfoRow('Reward/Epoch', '$rewardLos LOS'),
+            _buildInfoRow('Miners This Epoch', '$minersThisEpoch'),
+            _buildInfoRow('Mining Threads', '${node.miningThreads}'),
+            _buildInfoRow('Chain', chainId),
+            _buildInfoRow('Remaining Supply', '$remainingDisplay LOS'),
+          ],
+        ),
       ),
     );
   }
@@ -764,12 +974,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     // Check if my validator is eligible
     String myRewardStatus = 'Not registered';
+    bool myEligible = false;
     if (_myAddress != null && _rewardInfo?['validators']?['details'] != null) {
       final details = _rewardInfo!['validators']['details'] as List<dynamic>;
       for (final v in details) {
         if (v['address'] == _myAddress) {
           if (v['eligible'] == true) {
             myRewardStatus = 'Eligible ✓';
+            myEligible = true;
           } else {
             final uptime = (v['uptime_pct'] as num?)?.toInt() ?? 0;
             if (uptime < 95) {
@@ -783,6 +995,22 @@ class _DashboardScreenState extends State<DashboardScreen> {
       }
     }
 
+    // Grey out countdown when user is NOT eligible for rewards
+    final isEligibleForReward = myEligible && eligibleCount > 0;
+    // Active color only when eligible; otherwise grey to avoid false hope
+    final timerColor = !isNodeRunning || !isEligibleForReward
+        ? Colors.grey
+        : _epochRemainingSecs <= 30
+            ? Colors.green
+            : _epochRemainingSecs <= 60
+                ? Colors.orange
+                : Colors.white;
+    final barColor = !isNodeRunning || !isEligibleForReward
+        ? Colors.grey
+        : _epochRemainingSecs <= 30
+            ? Colors.green
+            : Colors.blue;
+
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16.0),
@@ -794,7 +1022,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 Icon(
                   Icons.timer,
                   size: 24,
-                  color: _epochRemainingSecs <= 30 ? Colors.green : Colors.blue,
+                  color: barColor,
                 ),
                 const SizedBox(width: 8),
                 const Text(
@@ -826,25 +1054,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
             const Divider(),
 
-            // Big countdown timer
+            // Big countdown timer — greyed out when not eligible
             Center(
               child: Padding(
                 padding: const EdgeInsets.symmetric(vertical: 12),
-                child: isNodeRunning
-                    ? Text(
-                        _formatCountdown(_epochRemainingSecs),
-                        style: TextStyle(
-                          fontSize: 36,
-                          fontWeight: FontWeight.bold,
-                          fontFamily: 'monospace',
-                          color: _epochRemainingSecs <= 30
-                              ? Colors.green
-                              : _epochRemainingSecs <= 60
-                                  ? Colors.orange
-                                  : Colors.white,
-                        ),
-                      )
-                    : const Column(
+                child: !isNodeRunning
+                    ? const Column(
                         children: [
                           Icon(Icons.pause_circle_outline,
                               size: 36, color: Colors.grey),
@@ -863,24 +1078,42 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             style: TextStyle(color: Colors.grey, fontSize: 11),
                           ),
                         ],
+                      )
+                    : Column(
+                        children: [
+                          Text(
+                            _formatCountdown(_epochRemainingSecs),
+                            style: TextStyle(
+                              fontSize: 36,
+                              fontWeight: FontWeight.bold,
+                              fontFamily: 'monospace',
+                              color: timerColor,
+                            ),
+                          ),
+                          if (!isEligibleForReward) ...[
+                            const SizedBox(height: 4),
+                            const Text(
+                              'NOT ELIGIBLE — no reward this epoch',
+                              style: TextStyle(
+                                color: Colors.grey,
+                                fontSize: 11,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ],
+                        ],
                       ),
               ),
             ),
 
-            // Progress bar
+            // Progress bar — greyed out when not eligible
             ClipRRect(
               borderRadius: BorderRadius.circular(8),
               child: LinearProgressIndicator(
                 value: isNodeRunning ? progress : 0.0,
                 minHeight: 8,
                 backgroundColor: Colors.grey.withValues(alpha: 0.2),
-                valueColor: AlwaysStoppedAnimation<Color>(
-                  !isNodeRunning
-                      ? Colors.grey
-                      : _epochRemainingSecs <= 30
-                          ? Colors.green
-                          : Colors.blue,
-                ),
+                valueColor: AlwaysStoppedAnimation<Color>(barColor),
               ),
             ),
             const SizedBox(height: 12),
@@ -890,6 +1123,271 @@ class _DashboardScreenState extends State<DashboardScreen> {
             _buildInfoRow('Eligible Validators', '$eligibleCount'),
             _buildInfoRow('Pool Remaining', '$remainingDisplay LOS'),
             _buildInfoRow('Your Status', myRewardStatus),
+
+            // Warning: no rewards when 0 eligible validators
+            if (eligibleCount == 0 && isNodeRunning) ...[
+              const SizedBox(height: 8),
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.orange.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                      color: Colors.orange.withValues(alpha: 0.5), width: 1),
+                ),
+                child: const Row(
+                  children: [
+                    Icon(Icons.info_outline, color: Colors.orange, size: 16),
+                    SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'No eligible validators — rewards are NOT being distributed this epoch. '
+                        'Requires: min 1,000 LOS stake + ≥95% uptime.',
+                        style: TextStyle(color: Colors.orange, fontSize: 11),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+
+            // Hint for not-registered status
+            if (myRewardStatus == 'Not registered' && isNodeRunning) ...[
+              const SizedBox(height: 6),
+              const Text(
+                'Register as validator (min 1 LOS). Earn rewards with ≥1,000 LOS + ≥95% uptime.',
+                style: TextStyle(color: Colors.grey, fontSize: 11),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ─── Monitoring Cards ──────────────────────────────────────────
+
+  Widget _buildSlashingCard() {
+    final s = _slashingInfo!;
+    final slashed = s['slashed'] == true;
+    final reason = (s['reason'] ?? s['msg'] ?? 'None').toString();
+    final penalty = (s['penalty_cil'] ?? s['penalty'] ?? 0).toString();
+
+    return Card(
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(
+          color: slashed
+              ? Colors.red.withValues(alpha: 0.7)
+              : Colors.green.withValues(alpha: 0.3),
+          width: 1,
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(children: [
+              Icon(Icons.gavel,
+                  size: 24, color: slashed ? Colors.red : Colors.green),
+              const SizedBox(width: 8),
+              const Text('Slashing Status',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              const Spacer(),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: (slashed ? Colors.red : Colors.green)
+                      .withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                      color: slashed ? Colors.red : Colors.green, width: 1),
+                ),
+                child: Text(
+                  slashed ? 'SLASHED' : 'CLEAN',
+                  style: TextStyle(
+                    color: slashed ? Colors.red : Colors.green,
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ]),
+            const Divider(),
+            if (slashed) ...[
+              _buildInfoRow('Reason', reason),
+              _buildInfoRow('Penalty', '$penalty CIL'),
+            ] else
+              _buildInfoRow('Status', 'No slashing events'),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildConsensusCard() {
+    final c = _consensusInfo!;
+    final round = (c['round'] ?? c['current_round'] ?? '-').toString();
+    final phase = (c['phase'] ?? c['state'] ?? 'unknown').toString();
+    final quorum = (c['quorum'] ?? c['quorum_met'] ?? '-').toString();
+    final vc =
+        (c['validator_count'] ?? c['active_validators'] ?? '-').toString();
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Row(children: [
+              Icon(Icons.how_to_vote, size: 24, color: Colors.purple),
+              SizedBox(width: 8),
+              Text('Consensus',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            ]),
+            const Divider(),
+            _buildInfoRow('Round', round),
+            _buildInfoRow('Phase', phase),
+            _buildInfoRow('Quorum', quorum),
+            _buildInfoRow('Active Validators', vc),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSupplyCard() {
+    final s = _supplyInfo!;
+    // Parse CIL values for precise display
+    final totalCil = int.tryParse(
+            (s['total_supply_cil'] ?? s['total_cil'] ?? '0').toString()) ??
+        0;
+    final circulatingCil = int.tryParse(
+            (s['circulating_supply_cil'] ?? s['circulating_cil'] ?? '0')
+                .toString()) ??
+        0;
+    final stakedCil = int.tryParse(
+            (s['staked_supply_cil'] ?? s['staked_cil'] ?? '0').toString()) ??
+        0;
+    final miningPoolCil = int.tryParse(
+            (s['mining_pool_cil'] ?? s['remaining_mining_cil'] ?? '0')
+                .toString()) ??
+        0;
+
+    String fmt(int cil) =>
+        cil > 0 ? '${BlockchainConstants.cilToLosString(cil)} LOS' : '-';
+
+    // Fallback to _los string fields if _cil parsing returned 0
+    final totalDisplay = totalCil > 0
+        ? fmt(totalCil)
+        : '${s['total_supply_los'] ?? s['total_los'] ?? '21,936,236'} LOS';
+    final circDisplay = circulatingCil > 0
+        ? fmt(circulatingCil)
+        : '${s['circulating_supply_los'] ?? '-'} LOS';
+    final stakeDisplay =
+        stakedCil > 0 ? fmt(stakedCil) : '${s['staked_supply_los'] ?? '-'} LOS';
+    final miningDisplay = miningPoolCil > 0
+        ? fmt(miningPoolCil)
+        : '${s['mining_pool_los'] ?? '-'} LOS';
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Row(children: [
+              Icon(Icons.pie_chart, size: 24, color: Colors.teal),
+              SizedBox(width: 8),
+              Text('Supply Overview',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            ]),
+            const Divider(),
+            _buildInfoRow('Total Supply', totalDisplay),
+            _buildInfoRow('Circulating', circDisplay),
+            _buildInfoRow('Staked', stakeDisplay),
+            _buildInfoRow('Mining Pool', miningDisplay),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSyncCard() {
+    // The /sync endpoint returns peer state-sync data — NOT sync status.
+    // Use _nodeInfo (from /node-info) which has the real block_height,
+    // and _syncStatus (from /sync) for peer sync state if available.
+    final s = _syncStatus ?? {};
+    final blockHeight = _nodeInfo?['block_height'] ?? 0;
+    final peerSyncStatus = s['status']?.toString() ?? 'unknown';
+    // Node is "synced" if it has blocks AND the peer-sync status says up_to_date,
+    // OR if block_height > 0 (node has processed blocks from the network).
+    final synced =
+        blockHeight > 0 && (peerSyncStatus == 'up_to_date' || s.isEmpty);
+    final peerCount = _peers.length;
+
+    return Card(
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(
+          color: synced
+              ? Colors.green.withValues(alpha: 0.3)
+              : Colors.blue.withValues(alpha: 0.5),
+          width: 1,
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(children: [
+              Icon(Icons.sync,
+                  size: 24, color: synced ? Colors.green : Colors.blue),
+              const SizedBox(width: 8),
+              const Text('Sync Status',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              const Spacer(),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: (synced ? Colors.green : Colors.blue)
+                      .withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                      color: synced ? Colors.green : Colors.blue, width: 1),
+                ),
+                child: Text(
+                  synced ? 'SYNCED' : 'SYNCING',
+                  style: TextStyle(
+                    color: synced ? Colors.green : Colors.blue,
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ]),
+            const Divider(),
+            _buildInfoRow('Block Height', '$blockHeight'),
+            _buildInfoRow('Connected Peers', '$peerCount'),
+            if (!synced && blockHeight == 0) ...[
+              const SizedBox(height: 8),
+              const Text(
+                'Waiting for blocks from the network...',
+                style: TextStyle(color: Colors.grey, fontSize: 12),
+              ),
+              const SizedBox(height: 8),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: const LinearProgressIndicator(
+                  value: null, // indeterminate
+                  minHeight: 6,
+                  backgroundColor: Color(0x33888888),
+                  valueColor: AlwaysStoppedAnimation<Color>(Colors.blue),
+                ),
+              ),
+            ],
           ],
         ),
       ),

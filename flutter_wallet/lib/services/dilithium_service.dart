@@ -178,7 +178,7 @@ class DilithiumService {
     }
 
     // Try multiple locations in order of priority
-    // SECURITY FIX K-01: In release builds, only search bundled app locations.
+    // In release builds, only search bundled app locations.
     // Development paths are restricted to debug mode to prevent library hijacking.
     final sep = Platform.pathSeparator;
     final execDir =
@@ -246,7 +246,7 @@ class DilithiumService {
         secretKey: Uint8List.fromList(skPtr.asTypedList(_skBytes)),
       );
     } finally {
-      // FIX C12-06: Zero secret key memory before freeing
+      // Zero secret key memory before freeing
       skPtr.asTypedList(_skBytes).fillRange(0, _skBytes, 0);
       calloc.free(pkPtr);
       calloc.free(skPtr);
@@ -295,7 +295,7 @@ class DilithiumService {
     } finally {
       // Zero the seed memory before freeing
       seedPtr.asTypedList(seed.length).fillRange(0, seed.length, 0);
-      // FIX C12-06: Zero secret key memory before freeing
+      // Zero secret key memory before freeing
       skPtr.asTypedList(_skBytes).fillRange(0, _skBytes, 0);
       calloc.free(seedPtr);
       calloc.free(pkPtr);
@@ -335,7 +335,7 @@ class DilithiumService {
       losLog('🔑 [DilithiumService.sign] Signed (sig: $sigLen bytes)');
       return Uint8List.fromList(sigPtr.asTypedList(sigLen));
     } finally {
-      // SECURITY FIX S3: Zero secret key memory before freeing to prevent leak
+      // Zero secret key memory before freeing to prevent leak
       skPtr.asTypedList(secretKey.length).fillRange(0, secretKey.length, 0);
       calloc.free(msgPtr);
       calloc.free(skPtr);
@@ -483,11 +483,11 @@ class DilithiumService {
     }
   }
 
-  /// Mine Proof-of-Work using native Keccak-256 (100-1000x faster than Dart).
+  /// Mine Proof-of-Work using native SHA3-256 (NIST FIPS 202, 100-1000x faster than Dart).
   ///
   /// [buffer] is the pre-built signing_hash input with a placeholder 8-byte
   /// work field at [workOffset]. This function iterates nonces in that field
-  /// until it finds one where Keccak-256(buffer) has [difficultyBits] leading
+  /// until it finds one where SHA3-256(buffer) has [difficultyBits] leading
   /// zero bits.
   ///
   /// Returns `{'work': nonce, 'hash': hexHash}` on success, null on failure.
@@ -548,7 +548,7 @@ class DilithiumKeypair {
   /// Public key as hex string
   String get publicKeyHex => DilithiumService.bytesToHex(publicKey);
 
-  /// SECURITY FIX A-02: secretKeyHex removed — creating a 9728-char immutable
+  /// secretKeyHex removed — creating a 9728-char immutable
   /// Dart String that cannot be wiped from memory is a security risk.
   /// Use secretKeyBase64 for storage (shorter, same security), or pass
   /// the Uint8List directly to avoid creating any extra copies.

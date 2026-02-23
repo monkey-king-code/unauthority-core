@@ -139,9 +139,10 @@ impl ValidatorConfig {
             return Err("Invalid LOS address format".to_string());
         }
 
-        if self.stake_cil < 100_000_000_000_000 {
-            // Minimum 1,000 LOS stake (matches MIN_VALIDATOR_STAKE_CIL)
-            return Err("Stake must be >= 1000 LOS (100000000000000 cil)".to_string());
+        if self.stake_cil < 100_000_000_000 {
+            // Minimum 1 LOS to register as validator (matches MIN_VALIDATOR_REGISTER_CIL)
+            // Reward eligibility requires ≥1,000 LOS (MIN_VALIDATOR_STAKE_CIL)
+            return Err("Stake must be >= 1 LOS (100000000000 cil)".to_string());
         }
 
         if self.sentry_public.listen_port == 0 {
