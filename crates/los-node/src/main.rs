@@ -5924,8 +5924,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             }
                             if loaded_count > 0 {
-                                // NOTE: remaining_supply starts at PUBLIC_SUPPLY_CAP (20,400,700 LOS)
-                                // which already EXCLUDES the dev allocation (7%). Dev wallets are
+                                // NOTE: remaining_supply starts at PUBLIC_SUPPLY_CAP (21,158,413 LOS)
+                                // which already EXCLUDES the dev allocation (~3.5%). Dev wallets are
                                 // a separate pre-genesis allocation, NOT minted from the public mining pool.
                                 // Do NOT deduct genesis wallets from remaining_supply.
                                 save_to_disk_internal(&ledger_state, &database, true);

@@ -195,7 +195,7 @@ To participate in consensus and earn rewards, you must register as a validator.
 
 - Your node is now a **registered validator**
 - It participates in **aBFT consensus** (block production and voting)
-- Rewards are earned based on √(stake) — see [Reward Rules](#reward-rules) below
+- Rewards are earned proportionally to stake (linear, Sybil-neutral) — see [Reward Rules](#reward-rules) below
 - **Maintain ≥ 95% uptime** to remain eligible for rewards
 
 ### Reward Rules

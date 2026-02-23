@@ -340,8 +340,8 @@ Rewards come from a fixed pool of 500,000 LOS (non-inflationary — already part
 |---|---|
 | **Total Pool** | 500,000 LOS |
 | **Per Epoch** | 5,000 LOS (halves every 48 epochs) |
-| **Formula** | `reward_i = budget × √(stake_i) / Σ√(all_stakes)` |
-| **Math** | Integer square root (`isqrt`) — no floating-point |
+| **Formula** | `reward_i = budget × stake_i / Σ(all_stakes)` |
+| **Math** | Pure linear integer arithmetic — no floating-point, Sybil-neutral |
 | **Min Stake** | 1,000 LOS |
 | **Min Uptime** | ≥95% |
 

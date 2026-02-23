@@ -130,7 +130,7 @@ The first production release of the Unauthority blockchain, running on the live 
 
 - Zero `unwrap()` calls in production code paths.
 - Zero floating-point arithmetic in consensus or financial logic.
-- Integer square root (`isqrt`) for all reward calculations.
+- Pure linear (integer-only) arithmetic for all reward calculations (Sybil-neutral).
 - All arithmetic uses checked/saturating operations to prevent overflow.
 - Network isolation: Mainnet and Testnet peers cannot contaminate each other.
 

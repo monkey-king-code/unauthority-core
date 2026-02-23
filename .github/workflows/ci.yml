@@ -50,6 +50,12 @@ jobs:
       - name: Run unit tests (all crates)
         run: cargo test --release --workspace --all-features --verbose --exclude los-vm --exclude unauthority-integration-tests
 
+      - name: Build with mainnet feature (verify mainnet code paths compile)
+        run: cargo build --release -p los-node --features mainnet --no-default-features
+
+      - name: Run tests with mainnet feature
+        run: cargo test --release -p los-core --features mainnet -p los-consensus --verbose
+
       - name: Run E2E tests (serial — Dilithium5 CPU-intensive)
         run: cargo test --release --all-features --test e2e_los_mainnet --test e2e_usp01_dex --test integration_test -- --test-threads=1
 

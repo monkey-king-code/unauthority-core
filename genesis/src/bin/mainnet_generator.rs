@@ -249,7 +249,7 @@ fn main() {
         "Bootstrap:        {} x {} LOS = {} LOS",
         BOOTSTRAP_NODE_COUNT, BOOTSTRAP_NODE_STAKE_LOS, TOTAL_BOOTSTRAP_LOS
     );
-    println!("Total Dev:        {} LOS (~3%)", DEV_SUPPLY_TOTAL_LOS);
+    println!("Total Dev:        {} LOS (~3.5%)", DEV_SUPPLY_TOTAL_LOS);
     println!("Public:           {} LOS (~97%)", PUBLIC_SUPPLY_LOS);
     println!("===========================================================\n");
 
@@ -261,7 +261,7 @@ fn main() {
 
     // ===== WRITE FULL BACKUP JSON (PRIVATE) =====
     let full_json = format!(
-        "{{\n  \"version\": \"2.0\",\n  \"network\": \"mainnet\",\n  \"description\": \"UNAUTHORITY MAINNET GENESIS - CONFIDENTIAL\",\n  \"warning\": \"CONTAINS PRIVATE KEYS - NEVER commit to git or share publicly!\",\n  \"crypto\": \"CRYSTALS-Dilithium5 (Post-Quantum)\",\n  \"total_supply_los\": \"{}\",\n  \"total_supply_cil\": \"{}\",\n  \"allocation\": {{\n    \"dev_treasury_total_los\": \"{}\",\n    \"dev_supply_total_los\": \"{}\",\n    \"public_supply_los\": \"{}\",\n    \"dev_percent\": \"~3%\"\n  }},\n  \"wallets\": [\n{}\n  ]\n}}",
+        "{{\n  \"version\": \"2.0\",\n  \"network\": \"mainnet\",\n  \"description\": \"UNAUTHORITY MAINNET GENESIS - CONFIDENTIAL\",\n  \"warning\": \"CONTAINS PRIVATE KEYS - NEVER commit to git or share publicly!\",\n  \"crypto\": \"CRYSTALS-Dilithium5 (Post-Quantum)\",\n  \"total_supply_los\": \"{}\",\n  \"total_supply_cil\": \"{}\",\n  \"allocation\": {{\n    \"dev_treasury_total_los\": \"{}\",\n    \"dev_supply_total_los\": \"{}\",\n    \"public_supply_los\": \"{}\",\n    \"dev_percent\": \"~3.5%\"\n  }},\n  \"wallets\": [\n{}\n  ]\n}}",
         TOTAL_SUPPLY_LOS,
         total_supply_cil,
         DEV_TREASURY_TOTAL_LOS,
@@ -272,7 +272,7 @@ fn main() {
 
     // ===== WRITE PUBLIC JSON (NO private keys, NO seeds) =====
     let public_json = format!(
-        "{{\n  \"version\": \"2.0\",\n  \"network\": \"mainnet\",\n  \"description\": \"UNAUTHORITY MAINNET GENESIS - PUBLIC INFO\",\n  \"note\": \"Public addresses and balances only. No private keys or seed phrases.\",\n  \"crypto\": \"CRYSTALS-Dilithium5 (Post-Quantum)\",\n  \"total_supply_los\": \"{}\",\n  \"total_supply_cil\": \"{}\",\n  \"allocation\": {{\n    \"dev_treasury_total_los\": \"{}\",\n    \"dev_supply_total_los\": \"{}\",\n    \"public_supply_los\": \"{}\",\n    \"dev_percent\": \"~3%\"\n  }},\n  \"wallets\": [\n{}\n  ]\n}}",
+        "{{\n  \"version\": \"2.0\",\n  \"network\": \"mainnet\",\n  \"description\": \"UNAUTHORITY MAINNET GENESIS - PUBLIC INFO\",\n  \"note\": \"Public addresses and balances only. No private keys or seed phrases.\",\n  \"crypto\": \"CRYSTALS-Dilithium5 (Post-Quantum)\",\n  \"total_supply_los\": \"{}\",\n  \"total_supply_cil\": \"{}\",\n  \"allocation\": {{\n    \"dev_treasury_total_los\": \"{}\",\n    \"dev_supply_total_los\": \"{}\",\n    \"public_supply_los\": \"{}\",\n    \"dev_percent\": \"~3.5%\"\n  }},\n  \"wallets\": [\n{}\n  ]\n}}",
         TOTAL_SUPPLY_LOS,
         total_supply_cil,
         DEV_TREASURY_TOTAL_LOS,

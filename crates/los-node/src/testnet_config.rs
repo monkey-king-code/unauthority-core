@@ -159,12 +159,18 @@ pub fn get_testnet_config() -> &'static TestnetConfig {
 }
 
 /// Check if we're in any testnet mode (vs mainnet)
-/// Returns false only when LOS_NETWORK=mainnet is explicitly set
+///
+/// On mainnet builds (`--features mainnet`), this always returns `false`
+/// regardless of environment variables — compile-time enforced.
+/// On testnet builds, returns `false` only when `LOS_NETWORK=mainnet` is set.
 #[allow(dead_code)]
 pub fn is_testnet() -> bool {
+    if los_core::is_mainnet_build() {
+        return false; // Compile-time: mainnet build can never be testnet
+    }
     match std::env::var("LOS_NETWORK").as_deref() {
         Ok("mainnet") => false,
-        _ => true, // Default: testnet
+        _ => true, // Default: testnet (for non-mainnet builds only)
     }
 }
 
