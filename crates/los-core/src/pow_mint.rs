@@ -383,7 +383,7 @@ pub fn count_leading_zero_bits(bytes: &[u8]) -> u32 {
 /// Returns Some(nonce) if found, None if cancelled via the cancel flag.
 ///
 /// Used by:
-/// - `--mine` background thread in uat-node
+/// - `--mine` background thread in los-node
 /// - CLI miner tool
 /// - Flutter wallet (via flutter_rust_bridge)
 pub fn mine(

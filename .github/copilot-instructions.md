@@ -31,7 +31,7 @@ Your goal is to build a **100% Immutable, Permissionless, and Decentralized** bl
 * **Difficulty:** Starts at 20 leading zero bits, auto-adjusts based on miner count.
 * **Deduplication:** 1 reward per (address, epoch) — no double-mining.
 * **Mining Requirement:**
-    * Miners **MUST** run a full validator node (`uat-node --mine`).
+    * Miners **MUST** run a full validator node (`los-node --mine`).
     * There is **NO** external mining API (POST /mine removed).
     * Mining runs as a background thread inside the node process.
     * Successful proofs create `Mint` blocks with `MINE:epoch:nonce` link format.

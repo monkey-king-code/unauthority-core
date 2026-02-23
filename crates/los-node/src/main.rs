@@ -1,7 +1,7 @@
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // UNAUTHORITY (LOS) - VALIDATOR NODE
 //
-// Main entry point for the uat-node binary.
+// Main entry point for the los-node binary.
 // Runs the full validator: REST API, gRPC, P2P gossip, Tor hidden service,
 // consensus engine, reward distribution, and state persistence.
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

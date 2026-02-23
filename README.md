@@ -127,7 +127,7 @@ See [Architecture Deep Dive](docs/ARCHITECTURE.md) for detailed crate documentat
 
 ### How to Acquire LOS (PoW Mining)
 
-LOS tokens are distributed through **Proof-of-Work Mining**. Miners run a full validator node (`uat-node --mine`) and solve SHA3-256 hash puzzles to earn block rewards.
+LOS tokens are distributed through **Proof-of-Work Mining**. Miners run a full validator node (`los-node --mine`) and solve SHA3-256 hash puzzles to earn block rewards.
 
 **Mining Mechanics:**
 - **Algorithm:** `SHA3-256(LOS_MINE_V1 ‖ chain_id ‖ address ‖ epoch ‖ nonce)`
