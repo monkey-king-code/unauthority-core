@@ -10,7 +10,9 @@
 /// 7. GetValidators - List all active validators
 /// 8. GetBlockHeight - Get current blockchain height
 use los_consensus::voting::calculate_voting_power;
-use los_core::{Ledger, CIL_PER_LOS, MIN_VALIDATOR_STAKE_CIL};
+use los_core::{
+    validator_rewards::ValidatorRewardPool, Ledger, CIL_PER_LOS, MIN_VALIDATOR_STAKE_CIL,
+};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
@@ -45,6 +47,8 @@ pub struct LosGrpcService {
     rest_bind_host: String,
     /// Shared HTTP client for REST forwarding (connection pooling, keep-alive)
     http_client: reqwest::Client,
+    /// Validator reward pool — provides real uptime percentages
+    reward_pool: Arc<Mutex<ValidatorRewardPool>>,
 }
 
 impl LosGrpcService {
@@ -55,6 +59,7 @@ impl LosGrpcService {
         address_book: Arc<Mutex<HashMap<String, String>>>,
         bootstrap_validators: Vec<String>,
         rest_api_port: u16,
+        reward_pool: Arc<Mutex<ValidatorRewardPool>>,
     ) -> Self {
         // REST forwarding always targets localhost — gRPC and REST are co-located
         let rest_bind_host = "127.0.0.1".to_string();
@@ -72,6 +77,7 @@ impl LosGrpcService {
             rest_api_port,
             rest_bind_host,
             http_client,
+            reward_pool,
         }
     }
 
@@ -126,13 +132,13 @@ impl LosNode for LosGrpcService {
             .get(&full_addr)
             .ok_or_else(|| Status::not_found("Account not found"))?;
 
-        // FIX V4#21: Use string formatting to avoid u128→u64 truncation
+        // Use string formatting to avoid u128→u64 truncation
         let balance_los = account.balance / CIL_PER_LOS;
         let balance_remainder = account.balance % CIL_PER_LOS;
 
         let response = GetBalanceResponse {
             address: full_addr,
-            balance_cil: account.balance.min(u64::MAX as u128) as u64, // SECURITY FIX C-MED03: Cap to u64::MAX (no silent truncation)
+            balance_cil: account.balance.min(u64::MAX as u128) as u64, // Cap to u64::MAX (no silent truncation)
             // PROTO BOUNDARY: `double balance_los` required by los.proto.
             // Integer `balance_cil_str` below is authoritative. This f64 is display-only.
             balance_los: balance_los as f64 + (balance_remainder as f64 / CIL_PER_LOS as f64),
@@ -172,13 +178,13 @@ impl LosNode for LosGrpcService {
             .get(&full_addr)
             .ok_or_else(|| Status::not_found("Account not found"))?;
 
-        // W-01 FIX: Use the authoritative is_validator flag from AccountState
+        // Use the authoritative is_validator flag from AccountState
         // instead of inferring from balance threshold
         let is_validator = account.is_validator;
 
         let response = GetAccountResponse {
             address: full_addr.clone(),
-            balance_cil: account.balance.min(u64::MAX as u128) as u64, // SECURITY FIX C-MED03: Cap to u64::MAX (no silent truncation)
+            balance_cil: account.balance.min(u64::MAX as u128) as u64, // Cap to u64::MAX (no silent truncation)
             // PROTO BOUNDARY: `double balance_los` required by los.proto.
             // Integer `balance_cil_str` below is authoritative. This f64 is display-only.
             balance_los: (account.balance / CIL_PER_LOS) as f64
@@ -268,7 +274,7 @@ impl LosNode for LosGrpcService {
             .lock()
             .map_err(|_| Status::internal("Failed to lock ledger"))?;
 
-        // FIX V4#20: Find ACTUAL latest block by timestamp (not random HashMap entry)
+        // Find ACTUAL latest block by timestamp (not random HashMap entry)
         let latest = ledger
             .blocks
             .iter()
@@ -385,11 +391,12 @@ impl LosNode for LosGrpcService {
             .lock()
             .map_err(|_| Status::internal("Failed to lock ledger"))?;
 
-        // Check if this node is validator
+        // Check if this node is validator — use the authoritative is_validator flag
+        // (not bare balance threshold, which would misreport deregistered validators)
         let is_validator = ledger
             .accounts
             .get(&self.my_address)
-            .map(|a| a.balance >= MIN_VALIDATOR_STAKE_CIL)
+            .map(|a| a.is_validator || a.balance >= MIN_VALIDATOR_STAKE_CIL)
             .unwrap_or(false);
 
         // Oracle prices not available in gRPC context (use REST /oracle endpoint)
@@ -407,7 +414,7 @@ impl LosNode for LosGrpcService {
             network_id: los_core::CHAIN_ID as u32, // CHAIN_ID: 1=mainnet, 2=testnet
             chain_name: "Unauthority".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
-            // FIX C11-M4: Use .min() saturation instead of hard-coding 0
+            // Use .min() saturation instead of hard-coding 0
             // u128 total supply overflows u64 — cap at u64::MAX for legacy field
             total_supply_cil: (21_936_236u128 * los_core::CIL_PER_LOS).min(u64::MAX as u128) as u64,
             remaining_supply_cil: (ledger.distribution.remaining_supply).min(u64::MAX as u128)
@@ -451,6 +458,18 @@ impl LosNode for LosGrpcService {
             .map(|ab| ab.keys().cloned().collect())
             .unwrap_or_default();
 
+        // Real uptime data from reward pool (heartbeat-based tracking)
+        let uptime_data: HashMap<String, u64> = self
+            .reward_pool
+            .lock()
+            .map(|rp| {
+                rp.validators
+                    .iter()
+                    .map(|(addr, vs)| (addr.clone(), vs.display_uptime_pct()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
         // Pre-compute cumulative rewards per validator from REWARD Mint blocks
         let mut reward_totals: HashMap<String, u128> = HashMap::new();
         for blk in ledger.blocks.values() {
@@ -466,7 +485,7 @@ impl LosNode for LosGrpcService {
             .filter(|(_, acc)| acc.balance >= min_stake)
             .map(|(addr, acc)| {
                 // Linear voting power: 1 CIL = 1 vote
-                // SECURITY FIX C-01: Changed from √stake to linear.
+                // Changed from √stake to linear.
                 // PROTO BOUNDARY: `double voting_power` required by los.proto.
                 // Linear CIL is authoritative; cast to f64 only for proto serialization.
                 let voting_power = calculate_voting_power(acc.balance) as f64;
@@ -480,12 +499,17 @@ impl LosNode for LosGrpcService {
 
                 ValidatorInfo {
                     address: addr.clone(),
-                    // FIX C11-C3: .min() guard prevents wrapping on balances > u64::MAX
+                    // .min() guard prevents wrapping on balances > u64::MAX
                     stake_cil: acc.balance.min(u64::MAX as u128) as u64,
                     is_active,
                     voting_power,
                     rewards_earned: earned.min(u64::MAX as u128) as u64,
-                    uptime_percent: if is_active { 100.0 } else { 0.0 },
+                    // Real uptime from heartbeat tracking (100 for self if not yet recorded)
+                    uptime_percent: uptime_data
+                        .get(addr)
+                        .copied()
+                        .unwrap_or(if addr == &self.my_address { 100 } else { 0 })
+                        as f64,
                 }
             })
             .collect();
@@ -535,6 +559,7 @@ impl LosNode for LosGrpcService {
 }
 
 /// Start gRPC server (runs alongside REST API)
+#[allow(clippy::too_many_arguments)]
 pub async fn start_grpc_server(
     ledger: Arc<Mutex<Ledger>>,
     my_address: String,
@@ -543,8 +568,9 @@ pub async fn start_grpc_server(
     address_book: Arc<Mutex<HashMap<String, String>>>,
     bootstrap_validators: Vec<String>,
     rest_api_port: u16,
+    reward_pool: Arc<Mutex<ValidatorRewardPool>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // FIX: Respect LOS_BIND_ALL env for Tor safety (same as REST API)
+    // Respect LOS_BIND_ALL env for Tor safety (same as REST API)
     let bind_addr = if std::env::var("LOS_BIND_ALL").unwrap_or_default() == "1" {
         format!("0.0.0.0:{}", grpc_port)
     } else {
@@ -559,6 +585,7 @@ pub async fn start_grpc_server(
         address_book,
         bootstrap_validators,
         rest_api_port,
+        reward_pool,
     );
 
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
@@ -580,8 +607,12 @@ pub async fn start_grpc_server(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use los_core::AccountState;
+    use los_core::{validator_rewards::ValidatorRewardPool, AccountState};
     use std::collections::HashMap;
+
+    fn mock_reward_pool() -> Arc<Mutex<ValidatorRewardPool>> {
+        Arc::new(Mutex::new(ValidatorRewardPool::new(0)))
+    }
 
     #[tokio::test]
     async fn test_grpc_get_balance() {
@@ -606,6 +637,7 @@ mod tests {
             Arc::new(Mutex::new(HashMap::new())),
             vec![],
             3030,
+            mock_reward_pool(),
         );
 
         let request = Request::new(GetBalanceRequest {
@@ -665,6 +697,7 @@ mod tests {
             Arc::new(Mutex::new(HashMap::new())),
             vec!["validator1".to_string(), "validator2".to_string()],
             3030,
+            mock_reward_pool(),
         );
 
         let request = Request::new(GetValidatorsRequest {});

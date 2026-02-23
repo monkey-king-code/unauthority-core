@@ -36,7 +36,7 @@ impl DistributionState {
             return 0;
         }
 
-        // SECURITY FIX V4#5: Integer math to avoid f64 precision drift
+        // Integer math to avoid f64 precision drift
         // Formula: yield = burn_usd * remaining_supply / PUBLIC_SUPPLY_CAP
         // Use checked arithmetic to prevent overflow
         // Scale: burn_amount_usd is in $0.01 units, result is in CIL
@@ -50,7 +50,7 @@ impl DistributionState {
         // Safe path: (burn_usd * remaining) / public_cap
         // With intermediate u128: max burn_usd ~10^12, remaining ~10^22 → ~10^34, fits u128 (max ~10^38)
         //
-        // SECURITY FIX C-08: On overflow, use divide-before-multiply fallback
+        // On overflow, use divide-before-multiply fallback
         // instead of returning 0 (which would silently destroy burned funds).
         let denominator = public_cap_los * CIL_PER_LOS;
         match burn_amount_usd.checked_mul(self.remaining_supply) {
@@ -59,7 +59,7 @@ impl DistributionState {
                 // Overflow fallback: split remaining = quotient*denominator + remainder.
                 // yield = burn * quotient + burn * remainder / denominator
                 //
-                // SECURITY FIX L-03: Previous code used (burn / denominator * remainder)
+                // Previous code used (burn / denominator * remainder)
                 // which truncates to 0 when burn < denominator, losing the entire
                 // remainder contribution. Now we try (burn * remainder) first, which
                 // is smaller than the original product and usually fits u128.

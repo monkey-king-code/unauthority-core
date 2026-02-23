@@ -92,7 +92,7 @@ class _MyAppState extends State<MyApp> {
         ),
       ],
       child: MaterialApp(
-        title: 'LOS Validator Node',
+        title: 'LOS Validator & Miner',
         debugShowCheckedModeBanner: false,
         theme: ThemeData(
           colorScheme: ColorScheme.fromSeed(
@@ -122,7 +122,7 @@ class _MyAppState extends State<MyApp> {
 }
 
 /// Routes based on wallet registration state:
-/// - No wallet → SetupWizard (import wallet + validate balance >= 1000 LOS)
+/// - No wallet → SetupWizard (import wallet + validate balance >= 1 LOS)
 /// - Wallet registered → NodeControlScreen (dashboard + settings)
 class _AppRouter extends StatefulWidget {
   const _AppRouter({super.key});
@@ -177,16 +177,16 @@ class _AppRouterState extends State<_AppRouter> {
               ),
               const SizedBox(height: 24),
               const Text(
-                'LOS VALIDATOR',
+                'LOS VALIDATOR & MINER',
                 style: TextStyle(
-                  fontSize: 32,
+                  fontSize: 28,
                   fontWeight: FontWeight.bold,
                   letterSpacing: 3,
                 ),
               ),
               const SizedBox(height: 8),
               Text(
-                'Unauthority Node Dashboard',
+                'Unauthority Validator & Miner',
                 style: TextStyle(
                   fontSize: 16,
                   color: Colors.grey[400],

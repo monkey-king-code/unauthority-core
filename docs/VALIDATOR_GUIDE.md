@@ -1,4 +1,4 @@
-# Validator Guide — Unauthority (LOS) v1.0.13
+# Validator Guide — Unauthority (LOS) v2.0.0
 
 This guide covers everything you need to run a validator node on the Unauthority network: installation, Tor setup, configuration, registration, rewards, monitoring, and maintenance.
 
@@ -398,7 +398,7 @@ Response:
 ```json
 {
   "status": "healthy",
-  "version": "1.0.13",
+  "version": "2.0.0",
   "uptime_seconds": 86400,
   "chain": { "accounts": 8, "blocks": 42, "id": "los-mainnet" },
   "database": { "accounts_count": 8, "blocks_count": 42, "size_on_disk": 524287 }

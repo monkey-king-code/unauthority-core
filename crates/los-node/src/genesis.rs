@@ -173,7 +173,7 @@ pub fn parse_los_to_cil(los_str: &str) -> Result<u128, String> {
 /// Validate genesis configuration.
 /// Supports both generator format (network_id, total_supply_cil) and legacy (network, total_supply).
 ///
-/// SECURITY FIX: Now enforces network_id matches runtime environment to prevent
+/// Now enforces network_id matches runtime environment to prevent
 /// a mainnet genesis being loaded on testnet or vice versa (chain contamination).
 pub fn validate_genesis(config: &GenesisConfig) -> Result<(), String> {
     // Check network — accept either format
@@ -189,7 +189,7 @@ pub fn validate_genesis(config: &GenesisConfig) -> Result<(), String> {
         ));
     }
 
-    // SECURITY FIX: Validate network_id matches runtime build target
+    // Validate network_id matches runtime build target
     // Prevents mainnet genesis loading on testnet or vice versa
     let is_mainnet_genesis = matches!(
         (&config.network, config.network_id),
@@ -221,7 +221,7 @@ pub fn validate_genesis(config: &GenesisConfig) -> Result<(), String> {
         tsv == 21_936_236u128 * CIL_PER_LOS
     } else if let Some(ref ts) = config.total_supply {
         // Legacy format: LOS string (e.g., "21936236" or "21936236.0")
-        // SECURITY FIX M-3: Parse numerically instead of trim_end_matches('0')
+        // Parse numerically instead of trim_end_matches('0')
         // which could strip meaningful digits (e.g., "219362360" → "21936236").
         if let Some(dot_idx) = ts.find('.') {
             let integer_part = &ts[..dot_idx];
@@ -243,7 +243,7 @@ pub fn validate_genesis(config: &GenesisConfig) -> Result<(), String> {
     }
 
     // Validate all addresses: must start with "LOS" and have minimum length
-    // SECURITY FIX: Added minimum length check to prevent malformed addresses
+    // Added minimum length check to prevent malformed addresses
     let all_wallets = config
         .bootstrap_nodes
         .iter()
@@ -263,7 +263,7 @@ pub fn validate_genesis(config: &GenesisConfig) -> Result<(), String> {
         }
     }
 
-    // FIX C11-04: Validate dev_supply_cil if present
+    // Validate dev_supply_cil if present
     // ~3.5% allocation: Dev Treasury (773,823) + Bootstrap (4,000) = 777,823 LOS
     if let Some(dsv) = config.dev_supply_cil {
         let expected_dev = 777_823u128 * CIL_PER_LOS;
@@ -275,7 +275,7 @@ pub fn validate_genesis(config: &GenesisConfig) -> Result<(), String> {
         }
     }
 
-    // FIX C11-04: Validate bootstrap_nodes count matches expected (4)
+    // Validate bootstrap_nodes count matches expected (4)
     if let Some(ref nodes) = config.bootstrap_nodes {
         if nodes.len() != 4 {
             return Err(format!(
@@ -297,7 +297,7 @@ pub fn validate_genesis(config: &GenesisConfig) -> Result<(), String> {
         }
     }
 
-    // FIX C11-14: Validate aggregate balance doesn't exceed total supply
+    // Validate aggregate balance doesn't exceed total supply
     if let Some(tsv) = config.total_supply_cil {
         let mut total_balance: u128 = 0;
         let all_wallets_for_sum = config

@@ -1,6 +1,6 @@
 import 'package:flutter/services.dart';
 
-/// SECURITY FIX I-01: Centralized clipboard utility with auto-clear.
+/// Centralized clipboard utility with auto-clear.
 ///
 /// All sensitive copy operations should use this utility instead of
 /// raw `Clipboard.setData()` to ensure clipboard is auto-cleared

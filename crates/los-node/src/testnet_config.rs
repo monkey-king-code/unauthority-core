@@ -132,7 +132,9 @@ static TESTNET_CONFIG: std::sync::LazyLock<TestnetConfig> = std::sync::LazyLock:
             TestnetConfig::functional()
         }
         Ok("consensus") => {
-            println!("🧪 TESTNET Level 2: Consensus testing (real aBFT, real signatures, PoW mining)");
+            println!(
+                "🧪 TESTNET Level 2: Consensus testing (real aBFT, real signatures, PoW mining)"
+            );
             TestnetConfig::consensus_testing()
         }
         Ok("production") => {

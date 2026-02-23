@@ -109,7 +109,7 @@ pub struct ContractEvent {
 pub struct WasmEngine {
     contracts: Arc<Mutex<BTreeMap<String, Contract>>>,
     nonce: Arc<Mutex<BTreeMap<String, u64>>>,
-    /// SECURITY FIX C-07 (TOCTOU): Per-contract execution locks.
+    /// Per-contract execution locks (TOCTOU prevention).
     /// Without this, two concurrent calls to the same contract would both
     /// snapshot the same state, execute independently, and overwrite each
     /// other's results. The lock ensures serialized execution per contract.
@@ -368,7 +368,7 @@ impl WasmEngine {
                 abort_flag.store(true, std::sync::atomic::Ordering::Relaxed);
                 // W-07: Track leaked thread count
                 LEAKED_THREADS.fetch_add(1, AtomicOrdering::Relaxed);
-                // FIX C11-H5: Do NOT join — if WASM entered an infinite loop inside
+                // Do NOT join — if WASM entered an infinite loop inside
                 // func.call(), the thread is permanently stuck and join() would block
                 // the calling thread forever. Let the thread leak (bounded damage).
                 Err(format!(
@@ -663,7 +663,10 @@ impl WasmEngine {
 
     /// Get or create a per-contract execution lock (C-07 TOCTOU fix).
     fn get_contract_lock(&self, contract_addr: &str) -> Arc<Mutex<()>> {
-        let mut locks = self.contract_locks.lock().unwrap_or_else(|e| e.into_inner());
+        let mut locks = self
+            .contract_locks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         locks
             .entry(contract_addr.to_string())
             .or_insert_with(|| Arc::new(Mutex::new(())))
@@ -674,7 +677,7 @@ impl WasmEngine {
     /// Returns `Ok(Some(result))` on success, `Ok(None)` if fallback is needed,
     /// or `Err(e)` for fatal errors that should propagate immediately.
     ///
-    /// SECURITY FIX C-07: Acquires a per-contract lock to prevent TOCTOU races.
+    /// Acquires a per-contract lock to prevent TOCTOU races.
     /// Without this, two concurrent calls to the same contract would snapshot the
     /// same state, execute independently, and the second write would silently
     /// overwrite the first's state changes.

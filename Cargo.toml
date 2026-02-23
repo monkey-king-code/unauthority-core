@@ -21,7 +21,7 @@ exclude = [
 # Integration tests package
 [package]
 name = "unauthority-integration-tests"
-version = "0.1.0"
+version = "2.0.0"
 edition = "2021"
 autotests = false
 
@@ -40,6 +40,11 @@ name = "e2e_usp01_dex"
 path = "tests/e2e_usp01_dex.rs"
 harness = true
 
+[[test]]
+name = "wallet_send_e2e"
+path = "tests/wallet_send_e2e.rs"
+harness = true
+
 [[bin]]
 name = "test-register-validator"
 path = "tests/test_register_validator.rs"
@@ -54,6 +59,8 @@ tokio = { version = "1", features = ["full"] }
 serde_json = "1.0"
 hex = "0.4"
 blake3 = "1"
+bip39 = "2.0"
+reqwest = { version = "0.12", features = ["blocking", "json"] }
 
 [patch.crates-io]
 pqcrypto-internals = { path = "pqcrypto-internals-seeded" }

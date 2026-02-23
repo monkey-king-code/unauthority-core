@@ -268,7 +268,7 @@ impl LosDatabase {
                     tx_accounts.insert(key.as_slice(), value.as_slice())?;
                 }
                 tx_meta.insert(b"distribution".as_ref(), distribution_json.as_slice())?;
-                // FIX C11-H2: Persist accumulated_fees_cil (lives on Ledger, not DistributionState)
+                // Persist accumulated_fees_cil (lives on Ledger, not DistributionState)
                 tx_meta.insert(
                     b"accumulated_fees_cil".as_ref(),
                     &ledger.accumulated_fees_cil.to_le_bytes() as &[u8],
@@ -330,7 +330,7 @@ impl LosDatabase {
                 .map_err(|e| format!("Failed to deserialize distribution: {}", e))?;
         }
 
-        // FIX C11-H2: Restore accumulated_fees_cil from persistent storage
+        // Restore accumulated_fees_cil from persistent storage
         if let Some(fee_bytes) = meta_tree
             .get(b"accumulated_fees_cil")
             .map_err(|e| format!("Failed to read accumulated_fees: {}", e))?

@@ -229,7 +229,7 @@ class DilithiumService {
     }
 
     // Try multiple locations in order of priority
-    // SECURITY FIX K-01: In release builds, only search bundled app locations.
+    // In release builds, only search bundled app locations.
     // Development paths are restricted to debug mode to prevent library hijacking.
     final sep = Platform.pathSeparator;
     final execDir = Platform.resolvedExecutable.replaceAll(
@@ -299,7 +299,7 @@ class DilithiumService {
         secretKey: Uint8List.fromList(skPtr.asTypedList(_skBytes)),
       );
     } finally {
-      // FIX H-01: Zero secret key native buffer before freeing
+      // Zero secret key native buffer before freeing
       skPtr.asTypedList(_skBytes).fillRange(0, _skBytes, 0);
       calloc.free(pkPtr);
       calloc.free(skPtr);
@@ -348,7 +348,7 @@ class DilithiumService {
     } finally {
       // Zero the seed memory before freeing
       seedPtr.asTypedList(seed.length).fillRange(0, seed.length, 0);
-      // FIX H-02: Zero secret key native buffer before freeing
+      // Zero secret key native buffer before freeing
       skPtr.asTypedList(_skBytes).fillRange(0, _skBytes, 0);
       calloc.free(seedPtr);
       calloc.free(pkPtr);
@@ -389,7 +389,7 @@ class DilithiumService {
       losLog('🔑 [DilithiumService.sign] Signed (sig: ${sig.length} bytes)');
       return sig;
     } finally {
-      // SECURITY FIX S3: Zero secret key memory before freeing to prevent leak
+      // Zero secret key memory before freeing to prevent leak
       skPtr.asTypedList(secretKey.length).fillRange(0, secretKey.length, 0);
       calloc.free(msgPtr);
       calloc.free(skPtr);
@@ -559,7 +559,7 @@ class DilithiumKeypair {
   /// Public key as hex string
   String get publicKeyHex => DilithiumService.bytesToHex(publicKey);
 
-  /// SECURITY FIX A-02: secretKeyHex removed — creating a 9728-char immutable
+  /// secretKeyHex removed — creating a 9728-char immutable
   /// Dart String that cannot be wiped from memory is a security risk.
   /// Use secretKeyBase64 for storage (shorter, same security), or pass
   /// the Uint8List directly to avoid creating any extra copies.

@@ -15,6 +15,10 @@ import '../widgets/network_status_bar.dart';
 import '../main.dart';
 import 'dashboard_screen.dart';
 
+/// Build-time network flag: --dart-define=NETWORK=mainnet for mainnet release
+const _networkMode = String.fromEnvironment('NETWORK', defaultValue: 'mainnet');
+const _isMainnet = _networkMode == 'mainnet';
+
 /// Main screen after wallet registration.
 /// Three tabs: Node (process controls), Dashboard (network monitoring), Settings.
 class NodeControlScreen extends StatefulWidget {
@@ -32,12 +36,22 @@ class _NodeControlScreenState extends State<NodeControlScreen>
   bool _showLogs = false;
   bool _isMonitorMode = false; // Genesis bootstrap validator → dashboard only
   bool _isStartingNode = false; // Debounce: prevent double-click race
+  bool _registrationAttempted = false; // Guard: prevent concurrent registration
+  bool _isRegisteredValidator = false; // Tracks actual on-chain registration
+  Timer?
+      _registrationRetryTimer; // Retries registration if initial attempt failed
+  Map<String, dynamic>? _miningInfo; // Live mining stats for node tab
+  Timer? _miningPollTimer; // Polls /mining-info every 5s when mining is active
+  List<String> _customNodes = []; // User-added custom peer URLs
+  final TextEditingController _nodeUrlController = TextEditingController();
 
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 3, vsync: this);
     _loadWalletInfo();
+    _startMiningPoll();
+    _loadCustomNodes();
   }
 
   Future<void> _loadWalletInfo() async {
@@ -52,7 +66,17 @@ class _NodeControlScreenState extends State<NodeControlScreen>
       });
       losLog(
           '🖥️ [NodeControlScreen._loadWalletInfo] Address: ${wallet['address']}, monitorMode: $monitorMode');
-      _refreshBalance();
+      // Only refresh balance if local node is already running.
+      // Without this, getBalance goes through Tor SOCKS5 to reach external
+      // .onion peers (45s timeout × 3 attempts = up to 135s blocking).
+      // Balance will be refreshed after _startNode sets local node URL.
+      final nodeService = context.read<NodeProcessService>();
+      if (nodeService.isRunning) {
+        _refreshBalance();
+      } else {
+        losLog(
+            '💰 [NodeControlScreen] Skipping balance refresh — node not running yet');
+      }
       // Auto-register as validator on the bootstrap node if not already registered.
       // This ensures the network knows about this validator even if the setup wizard
       // registration was skipped (e.g. node was already running, or Tor was down).
@@ -62,8 +86,12 @@ class _NodeControlScreenState extends State<NodeControlScreen>
 
   /// Register this wallet as a validator on the bootstrap node if not yet registered.
   /// Uses the same Dilithium5 signed proof of ownership — fully mainnet-ready.
+  /// Guarded: runs at most once per widget lifecycle to avoid redundant Tor calls.
   Future<void> _ensureValidatorRegistered(
       WalletService walletService, Map<String, String> wallet) async {
+    if (_registrationAttempted) return;
+    _registrationAttempted = true;
+
     // Capture context-dependent services before any async gap
     final apiService = context.read<ApiService>();
     final nodeService = context.read<NodeProcessService>();
@@ -81,6 +109,7 @@ class _NodeControlScreenState extends State<NodeControlScreen>
       final alreadyRegistered = validators.any((v) => v.address == address);
       if (alreadyRegistered) {
         losLog('✅ Validator already registered on bootstrap node');
+        if (mounted) setState(() => _isRegisteredValidator = true);
         return;
       }
 
@@ -102,6 +131,7 @@ class _NodeControlScreenState extends State<NodeControlScreen>
         onionAddress: myOnion,
       );
       losLog('✅ Auto-registered on bootstrap: ${result['msg']}');
+      if (mounted) setState(() => _isRegisteredValidator = true);
 
       // Also register on local node if running
       if (nodeService.isRunning) {
@@ -126,7 +156,25 @@ class _NodeControlScreenState extends State<NodeControlScreen>
       }
     } catch (e) {
       losLog('⚠️ Auto-registration deferred: $e');
+      // Reset guard so retry is possible. Schedule retry after 30s.
+      // Previously _registrationAttempted stayed true on failure,
+      // meaning if nodes were temporarily dead, registration never retried.
+      _registrationAttempted = false;
+      _scheduleRegistrationRetry(walletService, wallet);
     }
+  }
+
+  /// Schedule a registration retry after 30 seconds.
+  /// Keeps retrying until registration succeeds or widget is disposed.
+  void _scheduleRegistrationRetry(
+      WalletService walletService, Map<String, String> wallet) {
+    _registrationRetryTimer?.cancel();
+    if (_isRegisteredValidator) return; // Already registered
+    _registrationRetryTimer = Timer(const Duration(seconds: 30), () {
+      if (!mounted || _isRegisteredValidator) return;
+      losLog('🔄 Retrying validator registration...');
+      _ensureValidatorRegistered(walletService, wallet);
+    });
   }
 
   Future<void> _refreshBalance() async {
@@ -146,7 +194,63 @@ class _NodeControlScreenState extends State<NodeControlScreen>
   @override
   void dispose() {
     _tabController.dispose();
+    _miningPollTimer?.cancel();
+    _registrationRetryTimer?.cancel();
+    _nodeUrlController.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadCustomNodes() async {
+    final api = context.read<ApiService>();
+    final nodes = await api.getCustomNodes();
+    if (mounted) setState(() => _customNodes = nodes);
+  }
+
+  Future<void> _addCustomNode() async {
+    final url = _nodeUrlController.text.trim();
+    if (url.isEmpty) return;
+
+    final api = context.read<ApiService>();
+    final result = await api.addCustomNode(url);
+
+    if (mounted) {
+      _nodeUrlController.clear();
+      await _loadCustomNodes();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(result), duration: const Duration(seconds: 3)),
+      );
+    }
+  }
+
+  Future<void> _removeCustomNode(String url) async {
+    final api = context.read<ApiService>();
+    await api.removeCustomNode(url);
+    if (mounted) await _loadCustomNodes();
+  }
+
+  /// Poll /mining-info every 5s when mining is active, stop when not.
+  void _startMiningPoll() {
+    _miningPollTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      if (!mounted) return;
+      final node = context.read<NodeProcessService>();
+      if (node.isRunning && node.enableMining) {
+        _fetchMiningInfo(node);
+      } else if (_miningInfo != null) {
+        setState(() => _miningInfo = null);
+      }
+    });
+  }
+
+  Future<void> _fetchMiningInfo(NodeProcessService node) async {
+    try {
+      final api = context.read<ApiService>();
+      final data = await api.getMiningInfo(localUrl: node.localApiUrl);
+      if (mounted && data.isNotEmpty) {
+        setState(() => _miningInfo = data);
+      }
+    } catch (_) {
+      // Silently ignore — mining info is best-effort
+    }
   }
 
   @override
@@ -229,6 +333,8 @@ class _NodeControlScreenState extends State<NodeControlScreen>
               _buildNodeInfoCard(node),
               const SizedBox(height: 16),
               _buildControlButtons(node),
+              const SizedBox(height: 16),
+              _buildMiningCard(node),
               const SizedBox(height: 16),
               _buildLogSection(node),
             ],
@@ -462,6 +568,189 @@ class _NodeControlScreenState extends State<NodeControlScreen>
     ]);
   }
 
+  Widget _buildMiningCard(NodeProcessService node) {
+    final isMining = node.enableMining;
+    final threads = node.miningThreads;
+    final isRunning = node.isRunning;
+    final m = _miningInfo; // Live mining data from /mining-info
+
+    return Card(
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(
+          color: isMining
+              ? Colors.orange.withValues(alpha: 0.5)
+              : Colors.transparent,
+          width: 1,
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(children: [
+              Icon(Icons.hardware,
+                  color: isMining ? Colors.orange : Colors.grey),
+              const SizedBox(width: 8),
+              const Text('PoW Mining',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+              const Spacer(),
+              if (isMining && isRunning)
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: Colors.orange.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.orange, width: 1),
+                  ),
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    SizedBox(
+                      width: 10,
+                      height: 10,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        valueColor:
+                            AlwaysStoppedAnimation<Color>(Colors.orange[300]!),
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    const Text(
+                      'MINING',
+                      style: TextStyle(
+                        color: Colors.orange,
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ]),
+                ),
+              const SizedBox(width: 8),
+              Switch(
+                value: isMining,
+                activeThumbColor: Colors.orange,
+                onChanged: isRunning ? (v) => _toggleMining(node, v) : null,
+              ),
+            ]),
+            const Divider(),
+            if (isMining && isRunning) ...[
+              // Live mining stats
+              if (m != null) ...[
+                _miningStatRow(
+                    'Epoch', '#${m['epoch'] ?? '-'}', Icons.schedule),
+                _miningStatRow(
+                    'Difficulty',
+                    '${m['difficulty_bits'] ?? '-'} leading zero bits',
+                    Icons.speed),
+                _miningStatRow('Reward/Epoch',
+                    '${m['reward_per_epoch_los'] ?? '-'} LOS', Icons.toll),
+                _miningStatRow('Miners This Epoch',
+                    '${m['miners_this_epoch'] ?? '-'}', Icons.people),
+                _miningStatRow('Threads', '$threads', Icons.memory),
+                if (m['epoch_remaining_secs'] != null)
+                  _miningStatRow(
+                      'Next Epoch In',
+                      _fmtSecs(
+                          (m['epoch_remaining_secs'] as num?)?.toInt() ?? 0),
+                      Icons.timer),
+              ] else ...[
+                // Mining enabled but stats not loaded yet
+                Row(children: [
+                  SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        valueColor:
+                            AlwaysStoppedAnimation<Color>(Colors.orange[300]!)),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    'Loading mining stats... ($threads thread${threads > 1 ? 's' : ''})',
+                    style: const TextStyle(
+                        color: Colors.orange, fontWeight: FontWeight.w500),
+                  ),
+                ]),
+              ],
+              const SizedBox(height: 8),
+              Text(
+                'SHA3-256 PoW mining is running. Full stats on Dashboard tab.',
+                style: TextStyle(fontSize: 11, color: Colors.grey[500]),
+              ),
+            ] else if (isMining && !isRunning) ...[
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                    color: Colors.orange.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(6)),
+                child: const Row(children: [
+                  Icon(Icons.info_outline, color: Colors.orange, size: 16),
+                  SizedBox(width: 8),
+                  Expanded(
+                      child: Text(
+                    'Mining will start automatically when you start the node.',
+                    style: TextStyle(fontSize: 11, color: Colors.orange),
+                  )),
+                ]),
+              ),
+            ] else ...[
+              Text(
+                isRunning
+                    ? 'Mining is OFF. Toggle to start earning PoW rewards.\n'
+                        'Node will restart with --mine flag.'
+                    : 'Start the node first, then toggle mining here.',
+                style: TextStyle(fontSize: 12, color: Colors.grey[400]),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _miningStatRow(String label, String value, IconData icon) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(children: [
+        Icon(icon, size: 16, color: Colors.orange.withValues(alpha: 0.7)),
+        const SizedBox(width: 8),
+        Text(label, style: TextStyle(color: Colors.grey[400], fontSize: 13)),
+        const Spacer(),
+        Text(value,
+            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+      ]),
+    );
+  }
+
+  String _fmtSecs(int s) {
+    if (s <= 0) return '00:00';
+    final h = s ~/ 3600;
+    final m = (s % 3600) ~/ 60;
+    final sec = s % 60;
+    if (h > 0) {
+      return '${h.toString().padLeft(2, '0')}:${m.toString().padLeft(2, '0')}:${sec.toString().padLeft(2, '0')}';
+    }
+    return '${m.toString().padLeft(2, '0')}:${sec.toString().padLeft(2, '0')}';
+  }
+
+  /// Toggle mining on/off by restarting the node.
+  Future<void> _toggleMining(NodeProcessService node, bool enable) async {
+    losLog(
+        '⛏️ [NodeControlScreen._toggleMining] enable=$enable, threads=${node.miningThreads}');
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(enable
+          ? '⛏️ Starting mining... Node will restart.'
+          : '⏹ Stopping mining... Node will restart.'),
+      backgroundColor: enable ? Colors.orange : Colors.grey,
+      duration: const Duration(seconds: 3),
+    ));
+    await node.restart(
+      enableMining: enable,
+      miningThreads: node.miningThreads,
+    );
+  }
+
   Widget _buildLogSection(NodeProcessService node) {
     return Card(
       child: Column(children: [
@@ -556,15 +845,17 @@ class _NodeControlScreenState extends State<NodeControlScreen>
       // Build bootstrap nodes for P2P discovery.
       // MAINNET PARITY: ALWAYS use .onion P2P addresses.
       // No localhost/127.0.0.1 — Tor onion routing is mandatory.
-      const networkMode =
-          String.fromEnvironment('NETWORK', defaultValue: 'mainnet');
-      final activeNodes = networkMode == 'mainnet'
-          ? NetworkConfig.mainnetNodes
-          : NetworkConfig.testnetNodes;
+      final activeNodes =
+          _isMainnet ? NetworkConfig.mainnetNodes : NetworkConfig.testnetNodes;
       String? bootstrapNodes;
       if (activeNodes.isNotEmpty) {
-        bootstrapNodes = activeNodes.map((n) => n.p2pAddress).join(',');
-        losLog('\ud83c\udf10 Bootstrap nodes (.onion): $bootstrapNodes');
+        bootstrapNodes = activeNodes.map((n) {
+          // Testnet: prefer clearnet localP2pAddress (127.0.0.1:7041-7044)
+          // Mainnet: always use .onion P2P (Tor mandatory)
+          final clearnet = !_isMainnet ? n.localP2pAddress : null;
+          return clearnet ?? n.p2pAddress;
+        }).join(',');
+        losLog('\ud83c\udf10 Bootstrap nodes (P2P): $bootstrapNodes');
       }
 
       // P2P port: auto-derived from API port + 1000 (matches los-node dynamic port)
@@ -574,10 +865,7 @@ class _NodeControlScreenState extends State<NodeControlScreen>
       // Tor SOCKS5 proxy: MANDATORY for dialing .onion bootstrap peers.
       // MAINNET PARITY: Without SOCKS5, los-node cannot reach any peer.
       if (!torService.isRunning) {
-        const isMainnet =
-            String.fromEnvironment('NETWORK', defaultValue: 'mainnet') ==
-                'mainnet';
-        if (isMainnet) {
+        if (_isMainnet) {
           // MAINNET SAFETY (M-6): Refuse to start without Tor
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
@@ -606,13 +894,18 @@ class _NodeControlScreenState extends State<NodeControlScreen>
         bootstrapNodes: bootstrapNodes,
         p2pPort: p2pPort,
         torSocks5: torSocks5,
+        enableMining: node.enableMining,
+        miningThreads: node.miningThreads,
       );
 
-      // FIX: Enable local node fallback in ApiService so Dashboard works
+      // Enable local node fallback in ApiService so Dashboard works
       // even when Tor SOCKS proxy is unavailable. The local node's REST API
       // at http://127.0.0.1:<port> is always reachable without Tor.
       if (started) {
         apiService.setLocalNodeUrl(node.localApiUrl);
+        // Now that local node is running, refresh balance instantly (<100ms)
+        // instead of going through slow Tor .onion peers.
+        _refreshBalance();
       }
 
       losLog(
@@ -651,6 +944,8 @@ class _NodeControlScreenState extends State<NodeControlScreen>
           _buildWalletCard(),
           const SizedBox(height: 16),
           _buildNetworkInfoCard(),
+          const SizedBox(height: 16),
+          _buildCustomNodesCard(),
           const SizedBox(height: 16),
           Container(
             padding: const EdgeInsets.all(12),
@@ -736,40 +1031,59 @@ class _NodeControlScreenState extends State<NodeControlScreen>
             ]),
             const SizedBox(height: 8),
             if (_balanceCil != null)
-              Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                  decoration: BoxDecoration(
-                      // Compare in CIL: 1000 LOS = 1000 * cilPerLos CIL
-                      // Integer comparison — no f64 precision loss
-                      color:
-                          _balanceCil! >= 1000 * BlockchainConstants.cilPerLos
-                              ? Colors.green.withValues(alpha: 0.1)
-                              : Colors.red.withValues(alpha: 0.1),
-                      borderRadius: BorderRadius.circular(8)),
-                  child: Row(mainAxisSize: MainAxisSize.min, children: [
-                    Icon(
-                        _balanceCil! >= 1000 * BlockchainConstants.cilPerLos
-                            ? Icons.check_circle
-                            : Icons.warning,
-                        size: 16,
-                        color:
-                            _balanceCil! >= 1000 * BlockchainConstants.cilPerLos
-                                ? Colors.green
-                                : Colors.red),
-                    const SizedBox(width: 6),
-                    Text(
-                        _balanceCil! >= 1000 * BlockchainConstants.cilPerLos
-                            ? 'Active Validator (Stake >= 1,000 LOS)'
-                            : 'Insufficient Stake',
-                        style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600,
-                            color: _balanceCil! >=
-                                    1000 * BlockchainConstants.cilPerLos
-                                ? Colors.green
-                                : Colors.red)),
-                  ])),
+              Builder(builder: (context) {
+                // Determine badge based on ACTUAL registration + balance
+                final bool hasRewardStake =
+                    _balanceCil! >= 1000 * BlockchainConstants.cilPerLos;
+                final bool hasMinStake =
+                    _balanceCil! >= 1 * BlockchainConstants.cilPerLos;
+
+                final Color badgeColor;
+                final IconData badgeIcon;
+                final String badgeText;
+
+                if (_isRegisteredValidator && hasRewardStake) {
+                  badgeColor = Colors.green;
+                  badgeIcon = Icons.check_circle;
+                  badgeText = 'Validator — Reward Eligible';
+                } else if (_isRegisteredValidator && hasMinStake) {
+                  badgeColor = Colors.amber;
+                  badgeIcon = Icons.verified;
+                  badgeText = 'Validator — Need 1,000 LOS for rewards';
+                } else if (_isRegisteredValidator) {
+                  badgeColor = Colors.orange;
+                  badgeIcon = Icons.verified;
+                  badgeText = 'Validator — Need 1 LOS min stake';
+                } else if (hasRewardStake) {
+                  badgeColor = Colors.green;
+                  badgeIcon = Icons.how_to_reg;
+                  badgeText = 'Eligible (>=1,000 LOS) — Not registered';
+                } else if (hasMinStake) {
+                  badgeColor = Colors.amber;
+                  badgeIcon = Icons.how_to_reg;
+                  badgeText = 'Eligible (>=1 LOS) — Not registered';
+                } else {
+                  badgeColor = Colors.red;
+                  badgeIcon = Icons.warning;
+                  badgeText = 'Insufficient Stake (min 1 LOS)';
+                }
+
+                return Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    decoration: BoxDecoration(
+                        color: badgeColor.withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(8)),
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      Icon(badgeIcon, size: 16, color: badgeColor),
+                      const SizedBox(width: 6),
+                      Text(badgeText,
+                          style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: badgeColor)),
+                    ]));
+              }),
           ],
         ),
       ),
@@ -798,6 +1112,96 @@ class _NodeControlScreenState extends State<NodeControlScreen>
                       _infoRow('Peers', '${net.peerCount}'),
                       _infoRow('Version', net.nodeVersion),
                     ])),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Custom Nodes card — allows users to manually add validator URLs.
+  /// Critical for bootstrap independence: if all bootstrap nodes go offline,
+  /// users can add any known validator URL to reconnect to the network.
+  Widget _buildCustomNodesCard() {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Row(children: [
+              Icon(Icons.dns, color: Colors.teal),
+              SizedBox(width: 8),
+              Expanded(
+                child: Text('Custom Nodes',
+                    style:
+                        TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              ),
+            ]),
+            const SizedBox(height: 4),
+            Text(
+              'Add validator URLs for network access. '
+              'If bootstrap nodes are offline, add any known validator to connect.',
+              style: TextStyle(fontSize: 12, color: Colors.grey[500]),
+            ),
+            const Divider(),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _nodeUrlController,
+                    decoration: const InputDecoration(
+                      hintText: 'e.g. 1.2.3.4:3030 or xyz.onion:80',
+                      isDense: true,
+                      border: OutlineInputBorder(),
+                      contentPadding:
+                          EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    ),
+                    style:
+                        const TextStyle(fontFamily: 'monospace', fontSize: 13),
+                    onSubmitted: (_) => _addCustomNode(),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                IconButton(
+                  icon: const Icon(Icons.add_circle, color: Colors.teal),
+                  onPressed: _addCustomNode,
+                  tooltip: 'Add Node',
+                ),
+              ],
+            ),
+            if (_customNodes.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              ..._customNodes.map((url) => Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 2),
+                    child: Row(
+                      children: [
+                        Icon(
+                          url.contains('.onion')
+                              ? Icons.security
+                              : Icons.public,
+                          size: 16,
+                          color: Colors.grey,
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            url,
+                            style: const TextStyle(
+                                fontFamily: 'monospace', fontSize: 12),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.remove_circle_outline,
+                              color: Colors.red, size: 20),
+                          onPressed: () => _removeCustomNode(url),
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(),
+                        ),
+                      ],
+                    ),
+                  )),
+            ],
           ],
         ),
       ),
@@ -885,6 +1289,7 @@ class _NodeControlScreenState extends State<NodeControlScreen>
 
                 // Capture context-dependent services before async gap
                 final walletService = context.read<WalletService>();
+                final apiService = context.read<ApiService>();
                 NodeProcessService? nodeRef;
                 TorService? torRef;
                 if (!_isMonitorMode) {
@@ -894,6 +1299,41 @@ class _NodeControlScreenState extends State<NodeControlScreen>
                   try {
                     torRef = context.read<TorService>();
                   } catch (_) {}
+                }
+
+                // 0. Call backend unregister endpoint (best-effort)
+                //    Requires Dilithium5 signed proof of ownership.
+                //    If the network is down, we still proceed with local cleanup.
+                if (!_isMonitorMode && _walletAddress != null) {
+                  try {
+                    final isAddressOnly =
+                        await walletService.isAddressOnlyImport();
+                    if (!isAddressOnly) {
+                      final wallet = await walletService.getCurrentWallet();
+                      final publicKey = wallet?['public_key'];
+                      if (publicKey != null) {
+                        final timestamp =
+                            DateTime.now().millisecondsSinceEpoch ~/ 1000;
+                        final message =
+                            'UNREGISTER_VALIDATOR:$_walletAddress:$timestamp';
+                        final signature =
+                            await walletService.signTransaction(message);
+                        await apiService.unregisterValidator(
+                          address: _walletAddress!,
+                          publicKey: publicKey,
+                          signature: signature,
+                          timestamp: timestamp,
+                        );
+                        losLog('✅ Unregistered from network');
+                      }
+                    } else {
+                      losLog(
+                          '⚠️ Cannot unregister: address-only import (no signing key)');
+                    }
+                  } catch (e) {
+                    losLog(
+                        '⚠️ Backend unregister failed (proceeding anyway): $e');
+                  }
                 }
 
                 // 1. Delete wallet FIRST (most important)

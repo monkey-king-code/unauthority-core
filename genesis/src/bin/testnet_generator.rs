@@ -21,7 +21,7 @@ use std::fs;
 const CIL_PER_LOS: u128 = 100_000_000_000;
 const TOTAL_SUPPLY_LOS: u128 = 21_936_236;
 
-// Genesis Allocation (~3.5% DEV / ~96.5% PUBLIC) per copilot-instructions.md
+// Genesis Allocation (~3.5% DEV / ~96.5% PUBLIC)
 const DEV_TREASURY_1_LOS: u128 = 428_113;
 const DEV_TREASURY_2_LOS: u128 = 245_710;
 const DEV_TREASURY_3_LOS: u128 = 50_000;

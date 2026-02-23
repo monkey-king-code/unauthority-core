@@ -30,7 +30,7 @@ pub enum NoisePattern {
 }
 
 /// Encryption key material
-/// FIX C12-04: Implements Drop to zeroize key material, preventing
+/// Implements Drop to zeroize key material, preventing
 /// ChaCha20-Poly1305 session keys from persisting in freed memory.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CipherKey {
@@ -320,7 +320,7 @@ impl SignerNode {
 
     /// Sign message and send encrypted via sentry tunnel.
     ///
-    /// SECURITY FIX C-17: Uses ChaCha20-Poly1305 AEAD encryption.
+    /// Uses ChaCha20-Poly1305 AEAD encryption.
     /// Previous version stored plaintext in the `ciphertext` field — the message
     /// was authenticated (MAC) but NOT encrypted, leaking content to any observer.
     /// Now uses the same AEAD scheme as `NoiseProtocolManager::encrypt_message()`.

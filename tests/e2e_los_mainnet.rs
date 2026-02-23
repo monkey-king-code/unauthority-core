@@ -810,9 +810,7 @@ async fn test_validator_rewards_epoch() {
         addrs.push(addr.clone());
         println!(
             "  Validator {}: {} LOS (stake weight = {})",
-            i,
-            stake_los,
-            stake_los
+            i, stake_los, stake_los
         );
     }
 
@@ -989,13 +987,13 @@ async fn test_abft_consensus_3_phase() {
 // ============================================================================
 // TEST 8: LINEAR VOTING POWER
 // ============================================================================
-// Linear voting: 1 CIL = 1 vote (Sybil-neutral, C-01 fix)
+// Linear voting: 1 CIL = 1 vote (Sybil-neutral)
 #[tokio::test]
 async fn test_linear_voting_power() {
     println!("\n🧪 TEST 8: Linear Voting Power");
     println!("==========================================\n");
 
-    // 1. Linear voting: Power = Stake (Sybil-neutral, C-01 fix)
+    // 1. Linear voting: Power = Stake (Sybil-neutral)
     let stakes_cil = [
         1_000 * CIL_PER_LOS,   // 1000 LOS
         10_000 * CIL_PER_LOS,  // 10000 LOS (10x more stake)
@@ -1016,7 +1014,7 @@ async fn test_linear_voting_power() {
         );
     }
 
-    // SECURITY FIX C-01: Linear voting — 10x stake gives 10x power (Sybil-neutral).
+    // SECURITY: Linear voting — 10x stake gives 10x power (Sybil-neutral).
     // Previously used √stake which made Sybil attacks profitable by splitting stake.
     if powers[0] > 0 {
         let ratio_10x = (powers[1] * 100) / powers[0]; // basis points-like
@@ -1043,13 +1041,13 @@ async fn test_linear_voting_power() {
         );
     }
 
-    // 2. Below minimum stake → zero power
-    let below_min = calculate_voting_power(999 * CIL_PER_LOS);
+    // 2. Below minimum stake (1 LOS) → zero power
+    let below_min = calculate_voting_power(CIL_PER_LOS / 2); // 0.5 LOS
     assert_eq!(
         below_min, 0,
-        "Below 1000 LOS stake must have 0 voting power"
+        "Below 1 LOS stake must have 0 voting power"
     );
-    println!("  ✅ Sub-minimum stake (999 LOS): power = 0");
+    println!("  ✅ Sub-minimum stake (0.5 LOS): power = 0");
 
     println!("\n  📊 Linear voting: verified");
 }
@@ -1067,11 +1065,13 @@ async fn test_finality_checkpoint() {
         "abc123def456".to_string(),    // block hash
         4,                             // validator count
         "state_root_hash".to_string(), // state root
-        // SECURITY FIX C-14: Real signatures instead of fake count
-        (0..3).map(|i| los_consensus::checkpoint::CheckpointSignature {
-            validator_address: format!("LOS_validator_{}", i),
-            signature: vec![0xBB; 64],
-        }).collect(),                  // 3 signatures (3/4 = 75% > 67%)
+        // Real signatures instead of fake count
+        (0..3)
+            .map(|i| los_consensus::checkpoint::CheckpointSignature {
+                validator_address: format!("LOS_validator_{}", i),
+                signature: vec![0xBB; 64],
+            })
+            .collect(), // 3 signatures (3/4 = 75% > 67%)
     );
 
     // Checkpoint ID must be deterministic
@@ -1093,10 +1093,12 @@ async fn test_finality_checkpoint() {
         "abc123".to_string(),
         4,
         "state_root".to_string(),
-        (0..2).map(|i| los_consensus::checkpoint::CheckpointSignature {
-            validator_address: format!("LOS_weak_{}", i),
-            signature: vec![0xCC; 64],
-        }).collect(), // only 2/4 = 50%
+        (0..2)
+            .map(|i| los_consensus::checkpoint::CheckpointSignature {
+                validator_address: format!("LOS_weak_{}", i),
+                signature: vec![0xCC; 64],
+            })
+            .collect(), // only 2/4 = 50%
     );
     assert!(
         !weak.verify_quorum(),

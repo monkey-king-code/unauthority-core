@@ -95,8 +95,8 @@ fn u128_to_str(val: u128) -> String {
         v /= 10;
     }
     digits.reverse();
-    // Safety: all bytes are ASCII digits
-    unsafe { String::from_utf8_unchecked(digits) }
+    // All bytes are proven ASCII digits — infallible conversion.
+    String::from_utf8(digits).unwrap_or_default()
 }
 
 /// Build balance state key.

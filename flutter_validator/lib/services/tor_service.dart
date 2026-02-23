@@ -38,7 +38,7 @@ class TorService {
   String? get onionAddress => _onionAddress;
   String get proxyAddress => _activeProxy ?? 'localhost:$_socksPort';
 
-  /// FIX B-03: Callback fired after Tor restarts with a new SOCKS port.
+  /// Callback fired after Tor restarts with a new SOCKS port.
   /// ApiService subscribes to this to recreate its HTTP client,
   /// preventing a 30-120s dead window during hidden service startup.
   VoidCallback? onSocksPortChanged;
@@ -349,7 +349,7 @@ ExitPolicy reject *:*
         return null;
       }
 
-      // FIX B-03: Notify listeners (ApiService) that the SOCKS port may have changed
+      // Notify listeners (ApiService) that the SOCKS port may have changed
       // so they can recreate their HTTP client pointing to the new port.
       onSocksPortChanged?.call();
 
@@ -698,7 +698,7 @@ ExitPolicy reject *:*
         return null;
       }
 
-      // SECURITY FIX B-01: Verify SHA-256 hash of downloaded archive.
+      // Verify SHA-256 hash of downloaded archive.
       // Prevents MITM attacks on clearnet download from torproject.org.
       final expectedHash = _getExpectedHash(url);
       if (expectedHash != null) {
@@ -823,16 +823,30 @@ ExitPolicy reject *:*
     return null;
   }
 
-  /// SECURITY FIX B-01: Known SHA-256 hashes for Tor Expert Bundle 14.0.4.
+  /// Known SHA-256 hashes for Tor Expert Bundle 14.0.4.
   /// Source: https://archive.torproject.org/tor-package-archive/torbrowser/14.0.4/sha256sums-signed-build.txt
   /// If the archive version is updated, these hashes must be updated too.
   /// Returns null for unknown URLs (verification skipped with warning).
   static String? _getExpectedHash(String url) {
+    // SHA-256 hashes from: https://archive.torproject.org/tor-package-archive/torbrowser/14.0.4/sha256sums-signed-build.txt
+    // MUST be updated whenever the Tor Expert Bundle version changes.
     const knownHashes = <String, String>{
-      // These will need to be populated with actual hashes from torproject.org
-      // when the version is pinned. For now, we log a warning if unknown.
+      'https://archive.torproject.org/tor-package-archive/torbrowser/14.0.4/tor-expert-bundle-macos-aarch64-14.0.4.tar.gz':
+          '0aa700ae8b6827177371dc1852547ef46444890a190309a8ef2514241c14f31f',
+      'https://archive.torproject.org/tor-package-archive/torbrowser/14.0.4/tor-expert-bundle-macos-x86_64-14.0.4.tar.gz':
+          'ba6d3c925f7e5e5cb6a4880313dacca17a02de076e3a932722fe69afe8335edc',
+      'https://archive.torproject.org/tor-package-archive/torbrowser/14.0.4/tor-expert-bundle-linux-x86_64-14.0.4.tar.gz':
+          '2a57d288528fffb8f70e551a96adf5ac06d8abf0f74fbdffe4721ea837347233',
+      'https://archive.torproject.org/tor-package-archive/torbrowser/14.0.4/tor-expert-bundle-linux-aarch64-14.0.4.tar.gz':
+          // Note: no aarch64 in official list; re-check torproject.org if needed
+          '',
+      'https://archive.torproject.org/tor-package-archive/torbrowser/14.0.4/tor-expert-bundle-windows-x86_64-14.0.4.tar.gz':
+          '2d8cd74b24cd87ba7a797b989cff7d6cd7c22ee55ab0a9ee3e99cba637af48e4',
     };
-    return knownHashes[url];
+    final hash = knownHashes[url];
+    // Return null for empty/missing hashes (triggers warning in caller)
+    if (hash == null || hash.isEmpty) return null;
+    return hash;
   }
 
   /// Search for tor binary in extracted archive directory.

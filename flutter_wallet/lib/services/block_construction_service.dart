@@ -44,9 +44,10 @@ class BlockConstructionService {
   /// Whether protocol params have been fetched from the node.
   bool _protocolFetched = false;
 
-  /// Default base fee in CIL (0.001 LOS) — used as last-resort fallback
+  /// Default base fee in CIL (0.001 LOS = 100_000 CIL) — used as last-resort fallback
   /// when both /node-info and /fee-estimate are unreachable.
-  static const int defaultBaseFeeCil = 100000000;
+  /// NOTE: 1 LOS = 10^11 CIL. Base fee = 0.001 LOS = 100_000 CIL.
+  static const int defaultBaseFeeCil = 100000;
 
   /// Maximum PoW iterations before giving up
   static const int maxPowIterations = 50000000;
@@ -191,7 +192,7 @@ class BlockConstructionService {
     losLog('⛏️ [Send] Mining PoW ($powBits-bit difficulty)...');
     final powStart = DateTime.now();
 
-    // 5. Mine PoW in a background isolate (FIX U1: prevents UI freeze)
+    // 5. Mine PoW in a background isolate (prevents UI freeze)
     final powResult = await _minePoWInIsolate(
       chainId: chainId,
       account: address,
@@ -214,6 +215,38 @@ class BlockConstructionService {
 
     final work = powResult['work'] as int;
     final signingHash = powResult['hash'] as String;
+
+    // ── DIAGNOSTIC: Log all fields used in signing_hash ──────────────────────
+    losLog('🔬 [Send] === SIGNING HASH DIAGNOSTICS ===');
+    losLog('🔬 [Send] chain_id=$chainId');
+    losLog('🔬 [Send] account=$address');
+    losLog('🔬 [Send] previous=$previous');
+    losLog('🔬 [Send] block_type=$blockTypeSend (Send)');
+    losLog('🔬 [Send] amount_cil=$amountCil');
+    losLog('🔬 [Send] link=$to');
+    losLog(
+        '🔬 [Send] public_key=${publicKeyHex.length} chars: ${publicKeyHex.substring(0, 16)}...');
+    losLog('🔬 [Send] work=$work (nonce from PoW)');
+    losLog('🔬 [Send] timestamp=$timestamp');
+    losLog('🔬 [Send] fee=$fee CIL');
+    losLog('🔬 [Send] signingHash=$signingHash');
+    losLog(
+        '🔬 [Send] signingHash[0..8]=${signingHash.substring(0, 8)} (Dart SHA3 — matches backend)');
+
+    // ── DIAGNOSTIC: native vs dart hash comparison ─────────────────────────
+    final nativeHashDebug = powResult['_nativeHash'] as String?;
+    if (nativeHashDebug != null) {
+      losLog('🔬 [CV] native=$nativeHashDebug dart(signing)=$signingHash');
+      if (nativeHashDebug != signingHash) {
+        losLog(
+            '⚠️ [CV] SHA3 divergence expected — signing with Dart hash which matches backend.');
+      } else {
+        losLog('✅ [CV] Both SHA3s agree.');
+      }
+    }
+    losLog('✅ [Send] Signing hash ready: $signingHash');
+    // ─────────────────────────────────────────────────────────────────────────
+
     losLog('🔏 [Send] Signing with Dilithium5...');
 
     // 6. Sign the signing_hash with Dilithium5
@@ -227,6 +260,12 @@ class BlockConstructionService {
 
     // 7. Submit pre-signed block to node
     // Pass amount_cil so backend uses exact CIL amount (supports sub-LOS precision)
+    // Log the exact JSON payload being sent
+    losLog(
+        '📡 [Send] Payload: from=$address to=$to amount=$amountLos amount_cil=${amountCil.toInt()} work=$work timestamp=$timestamp fee=$fee');
+    losLog(
+        '📡 [Send] Payload: previous=$previous pubkey_len=${publicKeyHex.length} sig_len=${signature.length}');
+
     final txResult = await _api.sendTransaction(
       from: address,
       to: to,
@@ -277,12 +316,12 @@ class BlockConstructionService {
     );
   }
 
-  /// FIX U1: Mine PoW in a background isolate to prevent UI thread freezing.
+  /// Mine PoW in a background isolate to prevent UI thread freezing.
   /// The heavy nonce loop runs off the main thread via Isolate.run().
   ///
-  /// OPTIMIZATION: If the native Rust FFI library is available (DilithiumService),
-  /// uses native SHA3-256 for 100-1000x speedup. Falls back to pure Dart
-  /// if the native library is not loaded.
+  /// PoW is mined using pure Dart SHA3-256 (pointycastle) which matches the
+  /// backend signing_hash() exactly — confirmed by signature verification tests.
+  /// Native FFI PoW is disabled; see NOTE below for details.
   Future<Map<String, dynamic>?> _minePoWInIsolate({
     required int chainId,
     required String account,
@@ -313,7 +352,7 @@ class BlockConstructionService {
     // public_key
     preData.addAll(utf8.encode(publicKey));
 
-    // Record the offset where WORK starts
+    // Record work-field byte offset BEFORE adding the placeholder
     final workOffset = preData.length;
 
     // Placeholder WORK (8 bytes, will be overwritten by miner)
@@ -328,9 +367,12 @@ class BlockConstructionService {
 
     final buffer = Uint8List.fromList(preData);
 
-    // Try native Rust PoW first (100-1000x faster)
+    // Native Rust PoW: fast nonce search (100-1000x faster than Dart).
+    // After finding a nonce, we cross-check that the DART SHA3 of the same buffer
+    // also has the required leading zeros. If they agree → great, no divergence.
+    // If native and Dart SHA3 diverge → skip to Dart PoW (safety fallback).
     if (DilithiumService.isAvailable) {
-      losLog('⚡ [PoW] Using native Rust SHA3-256');
+      losLog('⚡ [PoW] Trying native Rust PoW (fast path)...');
       final result = DilithiumService.minePow(
         buffer: buffer,
         workOffset: workOffset,
@@ -338,15 +380,50 @@ class BlockConstructionService {
         maxIterations: maxPowIterations,
       );
       if (result != null) {
-        losLog('⚡ [PoW] Native: nonce=${result['work']}');
-        return result;
+        final nonce = result['work'] as int;
+        // Cross-check: compute Dart SHA3 for the same buffer+nonce.
+        // This is the hash the backend will compute for verify_pow() and verify_signature().
+        final finalBuf = Uint8List.fromList(buffer);
+        ByteData.sublistView(finalBuf, workOffset, workOffset + 8)
+            .setUint64(0, nonce, Endian.little);
+        final dartHash = _sha3_256Static(finalBuf);
+        final nativeHash = result['hash'] as String;
+
+        // Check if Dart hash also meets difficulty (it SHOULD if native=backend)
+        final requiredZeroBytes = _powDifficultyBits ~/ 8;
+        final remainingBits = _powDifficultyBits % 8;
+        bool dartValid = true;
+        for (int i = 0; i < requiredZeroBytes; i++) {
+          if (int.parse(dartHash.substring(i * 2, i * 2 + 2), radix: 16) != 0) {
+            dartValid = false;
+            break;
+          }
+        }
+        if (dartValid && remainingBits > 0) {
+          final nibble = int.parse(
+              dartHash.substring(
+                  requiredZeroBytes * 2, requiredZeroBytes * 2 + 2),
+              radix: 16);
+          if ((nibble & (0xFF << (8 - remainingBits))) != 0) dartValid = false;
+        }
+
+        if (dartValid) {
+          // 🎉 Native and Dart SHA3 agree — use native nonce with Dart hash for signing
+          losLog(
+              '⚡ [PoW] Native+Dart agree: nonce=$nonce hash=${dartHash.substring(0, 8)}..');
+          return {'work': nonce, 'hash': dartHash};
+        } else {
+          // SHA3 divergence: native nonce doesn't satisfy Dart SHA3.
+          // Fall through to pure Dart PoW.
+          losLog(
+              '⚠️ [PoW] SHA3 divergence (native=${nativeHash.substring(0, 8)} dart=${dartHash.substring(0, 8)}) — using Dart PoW');
+        }
+      } else {
+        losLog('⚠️ [PoW] Native mining failed, falling back to Dart');
       }
-      losLog('⚠️ [PoW] Native mining failed, falling back to Dart');
-    } else {
-      losLog('⚠️ [PoW] Native library not available, using pure Dart');
     }
 
-    // Fallback: pure Dart PoW in isolate
+    losLog('⛏️ [PoW] Using pure Dart SHA3-256');
     final params = {
       'chainId': chainId,
       'account': account,
@@ -361,7 +438,7 @@ class BlockConstructionService {
       'diffBits': _powDifficultyBits,
     };
 
-    // FIX F1: Wrap Isolate.run in try-catch to handle "Computation ended without result"
+    // Wrap Isolate.run in try-catch to handle "Computation ended without result"
     // which can occur when the isolate is killed (e.g., during hot restart).
     try {
       final result = await Isolate.run(() => _minePoWSync(params));

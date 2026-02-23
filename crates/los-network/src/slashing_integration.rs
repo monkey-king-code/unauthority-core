@@ -207,7 +207,7 @@ impl SlashingManager {
             }
 
             // Calculate penalty using DOWNTIME_SLASH_BPS constant
-            // SECURITY FIX M-02: Use BPS constant for deterministic slash calculation
+            // Use BPS constant for deterministic slash calculation
             // DOWNTIME_SLASH_BPS / 10000 of stake, ceiling division for rounding up
             let slash_amount = (current_stake_cil * DOWNTIME_SLASH_BPS as u128).div_ceil(10_000);
 

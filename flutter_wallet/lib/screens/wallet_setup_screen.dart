@@ -248,23 +248,26 @@ class _WalletSetupScreenState extends State<WalletSetupScreen> {
         ),
         const SizedBox(height: 16),
 
-        // Import by Address (for testnet genesis)
-        OutlinedButton.icon(
-          onPressed: _isLoading ? null : () => setState(() => _mode = 2),
-          icon: const Icon(Icons.account_circle),
-          style: OutlinedButton.styleFrom(
-            padding: const EdgeInsets.all(16),
-            foregroundColor: Colors.orange,
+        // Import by Address — testnet only (hidden on mainnet builds)
+        if (const String.fromEnvironment('NETWORK', defaultValue: 'mainnet') !=
+            'mainnet') ...[
+          OutlinedButton.icon(
+            onPressed: _isLoading ? null : () => setState(() => _mode = 2),
+            icon: const Icon(Icons.account_circle),
+            style: OutlinedButton.styleFrom(
+              padding: const EdgeInsets.all(16),
+              foregroundColor: Colors.orange,
+            ),
+            label: const Text('IMPORT BY ADDRESS (TESTNET)',
+                style: TextStyle(fontSize: 14)),
           ),
-          label: const Text('IMPORT BY ADDRESS (TESTNET)',
-              style: TextStyle(fontSize: 14)),
-        ),
-        const SizedBox(height: 16),
-        const Text(
-          'Import by Address: Use a pre-funded testnet genesis address\nwithout needing a seed phrase.',
-          style: TextStyle(fontSize: 11, color: Colors.grey),
-          textAlign: TextAlign.center,
-        ),
+          const SizedBox(height: 16),
+          const Text(
+            'Import by Address: Use a pre-funded testnet genesis address\nwithout needing a seed phrase.',
+            style: TextStyle(fontSize: 11, color: Colors.grey),
+            textAlign: TextAlign.center,
+          ),
+        ],
       ],
     );
   }
@@ -347,7 +350,7 @@ class _WalletSetupScreenState extends State<WalletSetupScreen> {
               if (value == null || value.trim().isEmpty) {
                 return 'Please enter LOS address';
               }
-              // FIX: Use AddressValidator for consistent validation
+              // Use AddressValidator for consistent validation
               // across all screens (supports both hex and Base58 formats).
               return AddressValidator.getValidationError(value.trim());
             },

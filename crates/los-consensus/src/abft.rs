@@ -189,12 +189,12 @@ pub struct ABFTConsensus {
     pub blocks_finalized: u64,
     pub view_changes: u64,
 
-    // Security: Shared secret for keyed MAC authentication (C-03 fix)
+    // Security: Shared secret for keyed MAC authentication
     // Derived from node's secret key — prevents consensus message forgery.
     #[serde(skip, default)]
     pub shared_secret: Vec<u8>,
 
-    // Validator set: ordered list of real validator addresses for leader selection (C-04 fix)
+    // Validator set: ordered list of real validator addresses for leader selection
     // Index-based round-robin uses these instead of synthetic "validator-N" names.
     #[serde(default)]
     pub validator_set: Vec<String>,
@@ -219,7 +219,7 @@ impl ABFTConsensus {
             commit_votes: BTreeMap::new(),
             finalized_blocks: VecDeque::new(),
             finality_timestamp: 0,
-            block_timeout_ms: 10000, // DESIGN FIX D-9: 10s for Tor (.onion) network realism
+            block_timeout_ms: 10000, // DESIGN 10s for Tor (.onion) network realism
             view_change_timeout_ms: 5000,
             blocks_finalized: 0,
             view_changes: 0,
@@ -305,7 +305,7 @@ impl ABFTConsensus {
             ));
         }
 
-        // Record prepare vote — SECURITY FIX M-3: Dedup by sender.
+        // Record prepare vote — Dedup by sender.
         // Without this, a Byzantine validator could replay prepare messages
         // to artificially reach quorum (2f+1) and force consensus.
         let votes = self.prepare_votes.entry(msg.sequence).or_default();
@@ -334,7 +334,7 @@ impl ABFTConsensus {
 
         let sequence = msg.sequence;
 
-        // Record commit vote — SECURITY FIX M-3: Dedup by sender.
+        // Record commit vote — Dedup by sender.
         // Same rationale as prepare(): prevents a single Byzantine validator
         // from replaying commit messages to force finalization.
         let votes = self.commit_votes.entry(sequence).or_default();
@@ -431,7 +431,7 @@ impl ABFTConsensus {
         self.get_leader(self.view) == self.validator_id
     }
 
-    /// DESIGN FIX D-1: Record a block finalized by the CONFIRM_REQ/CONFIRM_RES
+    /// DESIGN Record a block finalized by the CONFIRM_REQ/CONFIRM_RES
     /// voting system. This wires the actual consensus activity into the aBFT
     /// stats tracker, so `/consensus` API reports real data instead of zeros.
     /// Called after the vote-accumulation system reaches threshold.
@@ -665,7 +665,7 @@ mod tests {
         assert!(consensus.is_byzantine_safe(0));
 
         let finality_time = consensus.calculate_finality_time();
-        // DESIGN FIX D-9: Updated from 3000ms to 10000ms for Tor (.onion) network realism.
+        // DESIGN Updated from 3000ms to 10000ms for Tor (.onion) network realism.
         // Tor adds ~2-5s latency per hop; 3-phase BFT with multiple round-trips
         // requires at minimum 6-15s over Tor. The 10s target is achievable.
         assert!(finality_time <= 10000); // Must finalize in <10 seconds (Tor realistic)
@@ -731,7 +731,7 @@ mod tests {
 
     #[test]
     fn test_prepare_vote_dedup_by_sender() {
-        // SECURITY FIX M-3: Verify that duplicate prepare votes from the same
+        // Verify that duplicate prepare votes from the same
         // sender are rejected. Without dedup, a single Byzantine validator could
         // replay prepare messages to artificially reach quorum.
         let mut consensus = ABFTConsensus::new("validator-1".to_string(), 7);
@@ -776,7 +776,7 @@ mod tests {
 
     #[test]
     fn test_commit_vote_dedup_by_sender() {
-        // SECURITY FIX M-3: Same dedup test for commit phase.
+        // Same dedup test for commit phase.
         let mut consensus = ABFTConsensus::new("validator-1".to_string(), 7);
 
         let block = Block {

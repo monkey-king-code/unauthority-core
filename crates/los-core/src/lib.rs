@@ -24,7 +24,11 @@ use crate::distribution::DistributionState;
 pub const CIL_PER_LOS: u128 = 100_000_000_000;
 /// Total supply: 21,936,236 LOS in CIL units (fixed, non-inflationary)
 pub const TOTAL_SUPPLY_CIL: u128 = 21_936_236 * CIL_PER_LOS;
-/// Minimum validator stake (1000 LOS in CIL units)
+/// Minimum balance to REGISTER as a validator (1 LOS in CIL units).
+/// Permissionless: any node with ≥1 LOS can participate in consensus.
+pub const MIN_VALIDATOR_REGISTER_CIL: u128 = CIL_PER_LOS;
+/// Minimum stake for REWARD eligibility + quorum weight (1000 LOS in CIL units).
+/// Only validators with ≥1,000 LOS earn epoch rewards and count toward quorum.
 pub const MIN_VALIDATOR_STAKE_CIL: u128 = 1_000 * CIL_PER_LOS;
 
 /// Base transaction fee in CIL (0.000001 LOS = 100,000 CIL)
@@ -301,7 +305,7 @@ pub struct Ledger {
     /// Accumulated transaction fees (CIL units) — available for validator distribution
     #[serde(default)]
     pub accumulated_fees_cil: u128,
-    /// DESIGN FIX D-4: Total CIL permanently removed from circulation via Slash blocks.
+    /// DESIGN Total CIL permanently removed from circulation via Slash blocks.
     /// Used by the supply audit to verify: sum(balances) + remaining_supply + pool_remaining + total_slashed == TOTAL_SUPPLY_CIL.
     /// Without this counter, slashed funds silently disappear and the supply invariant breaks.
     #[serde(default)]
@@ -326,7 +330,7 @@ impl Ledger {
         }
     }
 
-    /// DESIGN FIX D-7: Compute a deterministic state root hash from all account balances.
+    /// DESIGN Compute a deterministic state root hash from all account balances.
     /// Uses SHA3-256 (NIST FIPS 202) over sorted (address, balance) pairs.
     /// BTreeMap guarantees deterministic iteration order, so all nodes
     /// with the same state will produce the same root hash.
@@ -451,7 +455,7 @@ impl Ledger {
         // 8. TRANSACTION LOGIC BASED ON BLOCK TYPE
         match block.block_type {
             BlockType::Mint => {
-                // CRITICAL FIX: Check supply FIRST before modifying any state
+                // Check supply FIRST before modifying any state
                 if self.distribution.remaining_supply < block.amount {
                     return Err("Distribution Error: Supply exhausted!".to_string());
                 }
@@ -496,7 +500,7 @@ impl Ledger {
                 }
             }
             BlockType::Send => {
-                // FIX C11-H1: Enforce minimum transaction fee to prevent zero-fee spam
+                // Enforce minimum transaction fee to prevent zero-fee spam
                 const MIN_TX_FEE_CIL: u128 = 100_000; // 0.001 LOS minimum fee
                 if block.fee < MIN_TX_FEE_CIL {
                     return Err(format!(
@@ -518,7 +522,7 @@ impl Ledger {
                 self.accumulated_fees_cil = self.accumulated_fees_cil.saturating_add(block.fee);
             }
             BlockType::Receive => {
-                // SECURITY FIX #10: Validate that a matching Send block exists
+                // Validate that a matching Send block exists
                 // before crediting balance (prevents money-from-nothing Receive)
                 if let Some(send_block) = self.blocks.get(&block.link) {
                     // 1. Must reference a Send block
@@ -561,7 +565,7 @@ impl Ledger {
                 state.balance = state.balance.saturating_add(block.amount);
             }
             BlockType::Change => {
-                // SECURITY FIX #16: Reject no-op Change blocks (anti-spam)
+                // Reject no-op Change blocks (anti-spam)
                 // Change block `link` should contain new representative address
                 if block.link.is_empty() {
                     return Err(
@@ -645,7 +649,7 @@ impl Ledger {
                 if block.amount == 0 {
                     return Err("Slash Error: penalty amount must be > 0".to_string());
                 }
-                // AUTHORIZATION: Signer must be a registered validator (min 1000 LOS stake + is_validator flag)
+                // AUTHORIZATION: Signer must be a staked validator (min 1000 LOS + is_validator flag)
                 {
                     let pk_bytes = hex::decode(&block.public_key)
                         .map_err(|e| format!("Slash Error: Invalid public_key hex: {}", e))?;
@@ -677,7 +681,7 @@ impl Ledger {
                 // Penalty capped at available balance (saturating_sub prevents underflow)
                 let actual_slash = state.balance.min(block.amount);
                 state.balance = state.balance.saturating_sub(block.amount);
-                // DESIGN FIX D-4: Track slashed funds for supply invariant audit.
+                // DESIGN Track slashed funds for supply invariant audit.
                 // Slashed funds are burned (removed from circulation permanently)
                 // but must be accounted for so total supply doesn't silently shrink.
                 self.total_slashed_cil = self.total_slashed_cil.saturating_add(actual_slash);
@@ -708,7 +712,7 @@ impl Ledger {
         fees
     }
 
-    /// DESIGN FIX D-4: Supply invariant audit.
+    /// DESIGN Supply invariant audit.
     ///
     /// Verifies: sum(all_balances) + remaining_supply + total_slashed + accumulated_fees == EXPECTED_TOTAL
     ///
@@ -733,7 +737,8 @@ impl Ledger {
         let remaining_supply = self.distribution.remaining_supply;
 
         // reward pool: remaining + distributed = original pool
-        let _reward_pool_total = reward_pool_remaining_cil.saturating_add(reward_pool_distributed_cil);
+        let _reward_pool_total =
+            reward_pool_remaining_cil.saturating_add(reward_pool_distributed_cil);
 
         // Total accounted CIL:
         //   balances in accounts
@@ -766,20 +771,139 @@ impl Ledger {
             Err(format!(
                 "Supply audit FAILED: accounted {} > total {} (inflation of {} CIL). \
                 balances={}, remaining={}, slashed={}, fees={}, reward_pool_remaining={}",
-                accounted, total_supply_cil,
+                accounted,
+                total_supply_cil,
                 accounted - total_supply_cil,
-                balance_sum, remaining_supply, self.total_slashed_cil,
-                self.accumulated_fees_cil, reward_pool_remaining_cil,
+                balance_sum,
+                remaining_supply,
+                self.total_slashed_cil,
+                self.accumulated_fees_cil,
+                reward_pool_remaining_cil,
             ))
         } else {
             Err(format!(
                 "Supply audit FAILED: accounted {} < total {} (deflation of {} CIL). \
                 balances={}, remaining={}, slashed={}, fees={}, reward_pool_remaining={}",
-                accounted, total_supply_cil,
+                accounted,
+                total_supply_cil,
                 total_supply_cil - accounted,
-                balance_sum, remaining_supply, self.total_slashed_cil,
-                self.accumulated_fees_cil, reward_pool_remaining_cil,
+                balance_sum,
+                remaining_supply,
+                self.total_slashed_cil,
+                self.accumulated_fees_cil,
+                reward_pool_remaining_cil,
             ))
         }
+    }
+}
+
+#[cfg(test)]
+mod wallet_send_tests {
+    use super::*;
+
+    /// Cross-validation test: simulates Flutter wallet send transaction flow.
+    /// Verifies that sign() + verify_signature() works for a Send block,
+    /// matching the exact field order used by the Flutter wallet's PoW hash.
+    #[test]
+    fn test_flutter_send_sign_verify() {
+        // 1. Generate deterministic keypair from test seed (same as Flutter wallet)
+        let test_seed = b"test_bip39_seed_for_diagnostic_purposes_exactly_64_bytes_xxxxxxxxx";
+        let keypair = los_crypto::generate_keypair_from_seed(test_seed);
+        let pk_hex = hex::encode(&keypair.public_key);
+        println!("PK hex length = {}", pk_hex.len()); // Should be 5184 chars (2592 bytes * 2)
+        println!("PK (first 16) = {}", &pk_hex[..16]);
+
+        // 2. Build a block exactly as the backend would after receiving the send request
+        let from = "LOSWnrDcEDq9uXGgnfi5XEiEMPsrknCRYTKq1";
+        let to = "LOSX84MQjCL6ZaGCktyUxjj11XZ12Jkqq4JYR";
+        let prev = "d0aed58269e3f2072fe8744ff57beca9032d7ca1e03ebf7a5a42b8498e6d369c";
+        let amount_cil: u128 = 100_000_000_000_000; // 1000 LOS in CIL
+        let work: u64 = 12345;
+        let timestamp: u64 = 1700000000;
+        let fee: u128 = 100_000;
+
+        let mut blk = Block {
+            account: from.to_string(),
+            previous: prev.to_string(),
+            block_type: BlockType::Send,
+            amount: amount_cil,
+            link: to.to_string(),
+            signature: String::new(),
+            public_key: pk_hex.clone(),
+            work,
+            timestamp,
+            fee,
+        };
+
+        // 3. Compute signing_hash (same as backend verify_signature path)
+        let signing_hash = blk.signing_hash();
+        println!("signing_hash = {}", signing_hash);
+        println!("CHAIN_ID = {}", CHAIN_ID);
+
+        // 4. Sign the signing_hash as bytes (same as Flutter: utf8.encode(signingHash))
+        let sig_bytes = los_crypto::sign_message(signing_hash.as_bytes(), &keypair.secret_key)
+            .expect("sign failed");
+        println!("sig bytes len = {}", sig_bytes.len()); // Should be 4627
+
+        // 5. Set signature on block and verify
+        blk.signature = hex::encode(&sig_bytes);
+        let result = blk.verify_signature();
+        println!("verify_signature() = {}", result);
+        assert!(result, "Sign+Verify FAILED — signature does not match!");
+        println!("✅ Flutter send sign+verify OK");
+    }
+
+    /// Verify that signing_hash field order matches Flutter's _minePoWInIsolate buffer.
+    /// Both should produce the same bytes → same hash.
+    #[test]
+    fn test_signing_hash_field_order() {
+        use sha3::{Digest, Sha3_256};
+
+        let from = "LOStest_account";
+        let prev = "0";
+        let pk_hex = "aabbccdd"; // short test value
+        let to = "LOStest_link";
+        let amount: u128 = 500_000_000_000; // 5 LOS
+        let work: u64 = 999;
+        let timestamp: u64 = 1700000001;
+        let fee: u128 = 100_000;
+
+        // Backend approach: Block::signing_hash()
+        let blk = Block {
+            account: from.to_string(),
+            previous: prev.to_string(),
+            block_type: BlockType::Send,
+            amount,
+            link: to.to_string(),
+            signature: String::new(),
+            public_key: pk_hex.to_string(),
+            work,
+            timestamp,
+            fee,
+        };
+        let backend_hash = blk.signing_hash();
+
+        // Flutter approach: manual serialization (matches _minePoWInIsolate buffer)
+        let mut hasher = Sha3_256::new();
+        hasher.update(CHAIN_ID.to_le_bytes()); // chain_id (u64 LE)
+        hasher.update(from.as_bytes()); // account
+        hasher.update(prev.as_bytes()); // previous
+        hasher.update([0u8]); // block_type = Send = 0
+        hasher.update(amount.to_le_bytes()); // amount (u128 LE)
+        hasher.update(to.as_bytes()); // link
+        hasher.update(pk_hex.as_bytes()); // public_key (as hex string)
+        hasher.update(work.to_le_bytes()); // work (u64 LE)
+        hasher.update(timestamp.to_le_bytes()); // timestamp (u64 LE)
+        hasher.update(fee.to_le_bytes()); // fee (u128 LE)
+        let flutter_hash = hex::encode(hasher.finalize());
+
+        println!("backend_hash = {}", backend_hash);
+        println!("flutter_hash = {}", flutter_hash);
+
+        assert_eq!(
+            backend_hash, flutter_hash,
+            "signing_hash MISMATCH: backend ≠ flutter serialization order!"
+        );
+        println!("✅ signing_hash field order matches Flutter exactly");
     }
 }

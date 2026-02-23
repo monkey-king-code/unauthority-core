@@ -17,7 +17,7 @@ build_validator() {
 
   cd "$ROOT/flutter_validator"
 
-  VERSION="1.0.12"
+  VERSION="2.0.0"
   APP="build/macos/Build/Products/Release/LOS Validator Node.app"
   FRAMEWORKS="$APP/Contents/Frameworks"
 
@@ -53,7 +53,7 @@ build_wallet() {
   echo "=== Building Wallet DMG ==="
   cd "$ROOT/flutter_wallet"
 
-  VERSION="1.0.12"
+  VERSION="2.0.0"
   APP="build/macos/Build/Products/Release/LOS Wallet.app"
   FRAMEWORKS="$APP/Contents/Frameworks"
 

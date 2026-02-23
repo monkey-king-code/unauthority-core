@@ -2,30 +2,43 @@
   "version": 2,
   "comment": "Bootstrap node addresses — 4 validators for round-robin failover. DO NOT hardcode in source.",
   "testnet": {
+    "comment": "host = clearnet address for local dev. onion = Tor address for production testnet. Both are tried.",
     "bootstrap_nodes": [
       {
         "name": "validator-1",
+        "host": "127.0.0.1",
         "onion": "drnqiaqi5vvqpubem6qzptptijygbf7ggjheri6k5yn4qbeezhgjweyd.onion",
         "rest_port": 80,
-        "p2p_port": 4001
+        "p2p_port": 4001,
+        "local_rest_port": 7030,
+        "local_p2p_port": 7041
       },
       {
         "name": "validator-2",
+        "host": "127.0.0.1",
         "onion": "kpjv64bpekzqvnls2d5ss4sqhjdgi7maypfvceekxty2cfutjr4vgqid.onion",
         "rest_port": 80,
-        "p2p_port": 4001
+        "p2p_port": 4001,
+        "local_rest_port": 7031,
+        "local_p2p_port": 7042
       },
       {
         "name": "validator-3",
+        "host": "127.0.0.1",
         "onion": "w3x7wqb7267mfgcxsqjuinxuijvdswg4j2zwcdl2fr5mohbaywomdbad.onion",
         "rest_port": 80,
-        "p2p_port": 4001
+        "p2p_port": 4001,
+        "local_rest_port": 7032,
+        "local_p2p_port": 7043
       },
       {
         "name": "validator-4",
+        "host": "127.0.0.1",
         "onion": "xvulzhd5ekfmturmz7jdy3yguggyqwyx7jrysods7njvvzaicx72lwad.onion",
         "rest_port": 80,
-        "p2p_port": 4001
+        "p2p_port": 4001,
+        "local_rest_port": 7033,
+        "local_p2p_port": 7044
       }
     ]
   },

@@ -162,7 +162,10 @@ async fn test_pow_mining_distribution() {
     println!("ð¦ Initial State:");
     println!("  - Total Supply: {} LOS", total_supply / 100_000_000_000);
     println!("  - Public Supply: {} LOS", public_supply / 100_000_000_000);
-    println!("  - Remaining: {} LOS\n", remaining_public / 100_000_000_000);
+    println!(
+        "  - Remaining: {} LOS\n",
+        remaining_public / 100_000_000_000
+    );
 
     let base_reward: u128 = 100 * 100_000_000_000u128;
     let epochs_to_test = [1u64, 100, 1000, 8760];
@@ -171,14 +174,21 @@ async fn test_pow_mining_distribution() {
         let reward = base_reward >> halvings;
         if reward > 0 && remaining_public >= reward {
             remaining_public -= reward;
-            println!("â Epoch {}: reward = {} LOS, remaining = {} LOS",
-                epoch, reward / 100_000_000_000, remaining_public / 100_000_000_000);
+            println!(
+                "â Epoch {}: reward = {} LOS, remaining = {} LOS",
+                epoch,
+                reward / 100_000_000_000,
+                remaining_public / 100_000_000_000
+            );
         }
     }
 
     assert!(remaining_public > 0, "Public supply exhausted too soon!");
     assert!(remaining_public < public_supply, "Supply didn't decrease!");
-    assert!(base_reward == 100 * 100_000_000_000u128, "Reward must be 100 LOS");
+    assert!(
+        base_reward == 100 * 100_000_000_000u128,
+        "Reward must be 100 LOS"
+    );
 
     println!("\nâ TEST PASSED: PoW mining distribution working correctly\n");
 }
@@ -216,7 +226,7 @@ async fn test_byzantine_fault_tolerance() {
     let valid_prices: Vec<u128> = prices
         .iter()
         .filter(|&&p| {
-            let diff = if p > median { p - median } else { median - p };
+            let diff = p.abs_diff(median);
             diff * 10_000 <= median * threshold_bps
         })
         .copied()

@@ -57,7 +57,7 @@ class AddressValidator {
 
     // Check if it's Base58-encoded (mainnet format)
     if (_isBase58(body)) {
-      // SECURITY FIX E-01: Verify Base58Check checksum in pure Dart.
+      // Verify Base58Check checksum in pure Dart.
       // This catches mistyped addresses even when the native FFI validator
       // is unavailable. Format: Base58(version_byte + payload + checksum_4).
       final checksumError = _verifyBase58Checksum(body);
@@ -84,7 +84,7 @@ class AddressValidator {
         .hasMatch(s);
   }
 
-  /// SECURITY FIX E-01: Decode Base58 and verify the 4-byte SHA-256d checksum.
+  /// Decode Base58 and verify the 4-byte SHA-256d checksum.
   /// Returns null if checksum is valid, or an error message string.
   static String? _verifyBase58Checksum(String base58) {
     // Decode Base58 to bytes

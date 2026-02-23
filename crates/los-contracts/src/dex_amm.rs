@@ -109,8 +109,8 @@ fn u128_to_str(val: u128) -> String {
         v /= 10;
     }
     let bytes = &buf[pos..];
-    // SAFETY: we only write ASCII digits
-    unsafe { String::from_utf8_unchecked(alloc::vec::Vec::from(bytes)) }
+    // All bytes are proven ASCII digits — infallible conversion.
+    String::from_utf8(alloc::vec::Vec::from(bytes)).unwrap_or_default()
 }
 
 /// Parse u64 from decimal string.

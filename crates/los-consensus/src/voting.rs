@@ -16,9 +16,11 @@ use std::collections::BTreeMap;
 /// Voting power calculation precision (decimal places)
 pub const VOTING_POWER_PRECISION: u32 = 6;
 
-/// Minimum stake required to participate in consensus (1000 LOS minimum)
+/// Minimum stake required to participate in consensus (1 LOS minimum).
+/// Permissionless: any validator with ≥1 LOS gets voting power.
+/// Reward eligibility requires ≥1,000 LOS (enforced in validator_rewards.rs).
 /// 1 LOS = 100_000_000_000 CIL (10^11 precision)
-pub const MIN_STAKE_CIL: u128 = 100_000_000_000_000; // 1000 LOS × 10^11
+pub const MIN_STAKE_CIL: u128 = 100_000_000_000; // 1 LOS × 10^11
 
 /// Maximum stake for voting power calculation (prevents overflow)
 /// Total supply = 21,936,236 LOS × 10^11 CIL_PER_LOS
@@ -34,8 +36,8 @@ pub struct ValidatorVote {
     pub staked_amount_cil: u128,
 
     /// Calculated voting power (linear: 1 CIL = 1 vote)
-    /// SECURITY FIX C-01: Changed from √stake to linear to prevent Sybil attacks.
-    /// SECURITY FIX M-01: Uses u128 for cross-platform determinism.
+    /// Changed from √stake to linear to prevent Sybil attacks.
+    /// Uses u128 for cross-platform determinism.
     pub voting_power: u128,
 
     /// Vote preference (proposition ID or "abstain")
@@ -52,7 +54,7 @@ impl ValidatorVote {
         vote_preference: String,
         is_active: bool,
     ) -> Self {
-        // SECURITY FIX C-01: Linear voting power (1 CIL = 1 vote)
+        // Linear voting power (1 CIL = 1 vote)
         let voting_power = calculate_voting_power(staked_amount_cil);
 
         Self {
@@ -67,7 +69,7 @@ impl ValidatorVote {
 
 /// Calculate voting power using LINEAR formula: power = stake (1 CIL = 1 vote)
 ///
-/// SECURITY FIX C-01: Changed from √stake to linear to prevent Sybil attacks.
+/// Changed from √stake to linear to prevent Sybil attacks.
 /// Under √stake, splitting 10,000 into 10×1,000 yields MORE total power
 /// (10×√1000 > √10000), incentivizing dishonest identity splitting.
 /// Linear staking is Sybil-neutral: total power is conserved regardless
@@ -87,7 +89,7 @@ pub fn calculate_voting_power(staked_amount_cil: u128) -> u128 {
 /// Deterministic integer square root using Newton's method.
 /// Returns floor(√n) for any u128 value.
 ///
-/// NOTE: No longer used for voting power (switched to linear C-01 fix).
+/// NOTE: No longer used for voting power.
 /// Kept for potential future use (e.g., AMM LP token calculation).
 #[allow(dead_code)]
 fn isqrt(n: u128) -> u128 {
@@ -104,7 +106,7 @@ fn isqrt(n: u128) -> u128 {
 }
 
 /// Voting power summary for a network
-/// SECURITY FIX M-01: All fields use deterministic integer math.
+/// All fields use deterministic integer math.
 /// Concentration ratio uses basis points (0-10000 = 0%-100%).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VotingPowerSummary {
@@ -156,7 +158,7 @@ impl VotingSystem {
     }
 
     /// Register or update a validator
-    /// SECURITY FIX M-01: Returns u128 voting power (deterministic)
+    /// Returns u128 voting power (deterministic)
     pub fn register_validator(
         &mut self,
         validator_address: String,
@@ -185,7 +187,7 @@ impl VotingSystem {
     }
 
     /// Update validator stake (happens during epochs)
-    /// SECURITY FIX M-01: Returns u128 voting power (deterministic)
+    /// Returns u128 voting power (deterministic)
     pub fn update_stake(
         &mut self,
         validator_address: &str,
@@ -225,7 +227,7 @@ impl VotingSystem {
     }
 
     /// Get normalized voting power in basis points (0-10000)
-    /// SECURITY FIX M-01: Uses integer math for determinism.
+    /// Uses integer math for determinism.
     pub fn get_normalized_power(&self, validator_address: &str) -> Option<u32> {
         let total_power: u128 = self.validators.values().map(|v| v.voting_power).sum();
         if total_power == 0 {
@@ -237,7 +239,7 @@ impl VotingSystem {
     }
 
     /// Calculate voting power summary — all deterministic integer math
-    /// SECURITY FIX M-01: Eliminates f64 from governance summary.
+    /// Eliminates f64 from governance summary.
     pub fn get_summary(&self) -> VotingPowerSummary {
         let votes: Vec<ValidatorVote> = self
             .validators
@@ -283,7 +285,7 @@ impl VotingSystem {
     }
 
     /// Reach consensus on a proposal (>50% voting power needed)
-    /// SECURITY FIX M-01: Returns (votes_for_u128, percentage_bps_u32, consensus_bool)
+    /// Returns (votes_for_u128, percentage_bps_u32, consensus_bool)
     /// percentage_bps: 0-10000 basis points (5000 = 50%, 10000 = 100%)
     /// Consensus requires >5000 bps (strictly greater than 50%)
     pub fn calculate_proposal_consensus(&self, proposal_id: &str) -> (u128, u32, bool) {
@@ -313,7 +315,7 @@ impl VotingSystem {
     }
 
     /// Compare voting power distributions (for testing anti-whale effectiveness)
-    /// SECURITY FIX M-01: Returns basis points (u32) instead of f64 ratios.
+    /// Returns basis points (u32) instead of f64 ratios.
     /// Returns (whale_concentration_bps, distributed_concentration_bps, improvement_bps)
     pub fn compare_scenarios(
         whale_scenario: &[(String, u128)],
@@ -385,14 +387,18 @@ mod tests {
     use super::*;
 
     // 1 LOS = 100_000_000_000 CIL (10^11)
-    // MIN_STAKE_CIL = 1000 LOS = 100_000_000_000_000 CIL (10^14)
+    // MIN_STAKE_CIL = 1 LOS = 100_000_000_000 CIL (10^11)
     const LOS: u128 = 100_000_000_000; // 10^11 CIL per LOS
 
     #[test]
     fn test_voting_power_calculation() {
-        // 1000 LOS = MIN_STAKE = 100_000_000_000_000 CIL
-        let power = calculate_voting_power(1000 * LOS);
+        // 1 LOS = MIN_STAKE = 100_000_000_000 CIL
+        let power = calculate_voting_power(1 * LOS);
         // Linear: power = stake in CIL
+        assert_eq!(power, 1 * LOS);
+
+        // 1000 LOS
+        let power = calculate_voting_power(1000 * LOS);
         assert_eq!(power, 1000 * LOS);
 
         // 10000 LOS = 1_000_000_000_000_000 CIL
@@ -402,14 +408,18 @@ mod tests {
 
     #[test]
     fn test_voting_power_below_minimum() {
-        // 999 LOS = below MIN_STAKE (1000 LOS)
-        let power = calculate_voting_power(999 * LOS);
+        // 0 LOS = below MIN_STAKE (1 LOS)
+        let power = calculate_voting_power(0);
+        assert_eq!(power, 0); // No voting power
+
+        // Half a LOS = below MIN_STAKE
+        let power = calculate_voting_power(LOS / 2);
         assert_eq!(power, 0); // No voting power
     }
 
     #[test]
     fn test_sybil_resistance_linear() {
-        // SECURITY FIX C-01: Linear voting is Sybil-neutral.
+        // Linear voting is Sybil-neutral.
         // 1 whale with 10000 LOS should have EXACTLY EQUAL power
         // to 10 nodes with 1000 LOS each.
         let whale_stake = 10_000 * LOS;

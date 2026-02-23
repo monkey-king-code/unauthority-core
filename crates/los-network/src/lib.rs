@@ -206,8 +206,19 @@ impl LosNode {
                             println!("📡 Swarm: Dialing {}...", maddr);
                             let _ = swarm.dial(maddr);
                         }
-                    } else if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic.clone(), msg_to_send.as_bytes()) {
+                    } else {
+                        let msg_prefix = if msg_to_send.len() > 20 { &msg_to_send[..20] } else { &msg_to_send };
+                        match swarm.behaviour_mut().gossipsub.publish(topic.clone(), msg_to_send.as_bytes()) {
+                            Ok(_mid) => {
+                                if msg_to_send.starts_with("CONFIRM_REQ:") || msg_to_send.starts_with("CONFIRM_RES:") {
+                                    println!("📤 Gossip PUBLISHED OK: {} ({} bytes, mesh_peers={})", msg_prefix, msg_to_send.len(), connected_peers.len());
+                                }
+                            }
+                            Err(e) => {
                         let err_str = format!("{:?}", e);
+                        if msg_to_send.starts_with("CONFIRM_REQ:") || msg_to_send.starts_with("CONFIRM_RES:") {
+                            eprintln!("❌ Gossip FAILED for {}: {} (mesh_peers={})", msg_prefix, err_str, connected_peers.len());
+                        }
                         if err_str.contains("InsufficientPeers") {
                             // Log periodically instead of silently swallowing
                             static LAST_WARN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -220,6 +231,7 @@ impl LosNode {
                         } else {
                             eprintln!("⚠️ Broadcast Error: {:?}", e);
                         }
+                    }}
                     }
                 },
                 // ── RECONNECTION: Re-dial bootstrap nodes when mesh is thin ──

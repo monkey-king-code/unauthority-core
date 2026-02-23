@@ -45,7 +45,7 @@ class _BurnScreenState extends State<BurnScreen> {
       losLog('🔥 [Burn] Coin: $_selectedCoin, TXID: $cleanTxid');
       losLog('🔥 [Burn] Recipient: $recipientAddress');
 
-      // FIX F3: Sign burn message for authenticated burns.
+      // Sign burn message for authenticated burns.
       // Backend expects: "BURN:{coin_type}:{txid}:{recipient}"
       String? signature;
       if (publicKeyHex != null) {

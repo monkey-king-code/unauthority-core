@@ -30,9 +30,9 @@ class Account {
   }
 
   factory Account.fromJson(Map<String, dynamic> json) {
-    // FIX M-01: Use containsKey instead of != 0 so real zero balances
+    // Use containsKey instead of != 0 so real zero balances
     // are not skipped. A zero balance from balance_cil is still valid data.
-    // FIX: Removed duplicate containsKey check that made json['balance'] unreachable.
+    // Removed duplicate containsKey check that made json['balance'] unreachable.
     final int parsedBalance = json.containsKey('balance_cil')
         ? _parseIntField(json['balance_cil'])
         : _parseIntField(json['balance']);
@@ -124,7 +124,7 @@ class Transaction {
     }
 
     return Transaction(
-      // FIX C11-06: Backend returns "hash" not "txid" — map both
+      // Backend returns "hash" not "txid" — map both
       txid: json['txid'] ?? json['hash'] ?? '',
       from: json['from'] ?? json['account'] ?? '',
       to: json['to'] ?? json['link'] ?? '',

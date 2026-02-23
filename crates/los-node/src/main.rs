@@ -10,12 +10,18 @@
 
 use base64::Engine as _;
 use los_consensus::abft::ABFTConsensus; // aBFT engine for consensus stats & safety validation
-use los_consensus::checkpoint::{CheckpointManager, CheckpointSignature, FinalityCheckpoint, PendingCheckpoint, CHECKPOINT_INTERVAL}; // Finality checkpoints
+use los_consensus::checkpoint::{
+    CheckpointManager, CheckpointSignature, FinalityCheckpoint, PendingCheckpoint,
+    CHECKPOINT_INTERVAL,
+}; // Finality checkpoints
 use los_consensus::slashing::SlashingManager; // Slashing enforcement
 use los_consensus::voting::calculate_voting_power; // Linear voting: Power = Stake
-use los_core::pow_mint::MiningState; // PoW Mint distribution engine
+use los_core::pow_mint::{verify_mining_hash, MiningState}; // PoW Mint distribution engine
 use los_core::validator_rewards::ValidatorRewardPool;
-use los_core::{AccountState, Block, BlockType, Ledger, CIL_PER_LOS, MIN_VALIDATOR_STAKE_CIL};
+use los_core::{
+    AccountState, Block, BlockType, Ledger, CIL_PER_LOS, MIN_VALIDATOR_REGISTER_CIL,
+    MIN_VALIDATOR_STAKE_CIL,
+};
 use los_network::{LosNode, NetworkEvent};
 use los_vm::{dex_registry, token_registry, ContractCall, WasmEngine};
 use rate_limiter::{filters::rate_limit, RateLimiter};
@@ -42,7 +48,7 @@ fn safe_lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 use std::fs;
 use std::time::{Duration, Instant};
 
-// SECURITY FIX #11: Named constants for consensus thresholds (no more magic numbers)
+// Named constants for consensus thresholds (no more magic numbers)
 /// Linear voting power threshold for burn consensus (production)
 const BURN_CONSENSUS_THRESHOLD: u128 = 20_000;
 /// Linear voting power threshold for send confirmation (production)
@@ -51,7 +57,7 @@ const SEND_CONSENSUS_THRESHOLD: u128 = 20_000;
 /// Prevents single-validator self-consensus even if one validator has enough
 /// voting power to exceed the threshold alone.
 ///
-/// SECURITY FIX C-03: Dynamic minimum based on active validator count.
+/// Dynamic minimum based on active validator count.
 /// Uses standard BFT quorum: 2f+1 where f = (n-1)/3.
 /// With 4 validators: f=1, quorum=3 (75% participation).
 /// With 7 validators: f=2, quorum=5 (71% participation).
@@ -82,6 +88,9 @@ const TOTAL_SUPPLY_CIL: u128 = TOTAL_SUPPLY_LOS * CIL_PER_LOS;
 /// Maximum age of a burn TX: 25 days from current node time.
 /// Prevents claiming historical/ancient TXIDs that the sender has no relation to.
 const BURN_TX_MAX_AGE_SECS: u64 = 25 * 24 * 3600;
+/// Testnet faucet payout per request (5,000 LOS).
+/// MAINNET: Faucet endpoint is disabled on mainnet builds — this value is never used.
+const FAUCET_AMOUNT_CIL: u128 = 5_000 * CIL_PER_LOS;
 use serde_json::Value;
 
 mod db; // NEW: Database module (sled)
@@ -138,6 +147,20 @@ fn api_json(body: serde_json::Value) -> warp::reply::WithStatus<warp::reply::Jso
     warp::reply::with_status(warp::reply::json(&body), status)
 }
 
+/// Format seconds into human-readable uptime string (e.g. "3d 12h 5m").
+fn format_uptime(total_secs: u64) -> String {
+    let days = total_secs / 86400;
+    let hours = (total_secs % 86400) / 3600;
+    let mins = (total_secs % 3600) / 60;
+    if days > 0 {
+        format!("{}d {}h {}m", days, hours, mins)
+    } else if hours > 0 {
+        format!("{}h {}m", hours, mins)
+    } else {
+        format!("{}m", mins)
+    }
+}
+
 /// Insert a validator endpoint, deduplicating by host address.
 /// One host can only map to ONE current LOS address — if a validator
 /// restarts with a new keypair, the old stale entry is removed.
@@ -168,7 +191,11 @@ fn get_node_host_address() -> Option<String> {
     std::env::var("LOS_HOST_ADDRESS")
         .ok()
         .filter(|s| !s.is_empty())
-        .or_else(|| std::env::var("LOS_ONION_ADDRESS").ok().filter(|s| !s.is_empty()))
+        .or_else(|| {
+            std::env::var("LOS_ONION_ADDRESS")
+                .ok()
+                .filter(|s| !s.is_empty())
+        })
 }
 
 /// Resolve host address from a genesis wallet entry.
@@ -534,19 +561,19 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
     // Initialize shared secret and validator set
     {
         let mut abft = safe_lock(&abft_consensus);
-        // C-03 FIX: Set shared secret for MAC authentication (SHA3-256 of node's secret key)
+        // Set shared secret for MAC authentication (SHA3-256 of node's secret key)
         use sha3::{Digest as Sha3Digest, Sha3_256 as Sha3256Hasher};
         let mut hasher = Sha3256Hasher::new();
         hasher.update(&*secret_key);
         hasher.update(b"LOS_CONSENSUS_MAC_V1");
         abft.set_shared_secret(hasher.finalize().to_vec());
 
-        // C-04 FIX: Populate validator set with real addresses for leader selection
+        // Populate validator set with real addresses for leader selection
         let l = safe_lock(&ledger);
         let mut validators: Vec<String> = l
             .accounts
             .iter()
-            .filter(|(_, a)| a.balance >= MIN_VALIDATOR_STAKE_CIL && a.is_validator)
+            .filter(|(_, a)| a.balance >= MIN_VALIDATOR_REGISTER_CIL && a.is_validator)
             .map(|(addr, _)| addr.clone())
             .collect();
         validators.sort(); // Deterministic ordering across all nodes
@@ -632,7 +659,7 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                     let mut curr = acct.head.clone();
                     while curr != "0" {
                         if let Some(blk) = l_guard.blocks.get(&curr) {
-                            // FIX v1.0.7: Resolve actual sender for Receive blocks
+                            // Resolve actual sender for Receive blocks
                             let from_addr = match blk.block_type {
                                 BlockType::Send => blk.account.clone(),
                                 BlockType::Receive => {
@@ -766,7 +793,7 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
         .and(warp::body::bytes())
         .and(with_state((l_send, tx_send, p_send, my_address.clone(), secret_key.clone(), sl_send, pk_send, mp_send)))
         .then(#[allow(clippy::type_complexity)] |body: bytes::Bytes, (l, tx, p, my_addr, key, rate_lim, node_pk, mp): (Arc<Mutex<Ledger>>, mpsc::Sender<String>, Arc<Mutex<HashMap<String, (Block, u128)>>>, String, Zeroizing<Vec<u8>>, Arc<EndpointRateLimiter>, Vec<u8>, Arc<Mutex<mempool::Mempool>>)| async move {
-            // FIX BUG-1/2/6: Parse JSON manually to return proper 400 instead of 500
+            // Parse JSON manually to return proper 400 instead of 500
             let req: SendRequest = match serde_json::from_slice(&body) {
                 Ok(r) => r,
                 Err(e) => {
@@ -831,7 +858,7 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                 if let Some(found) = l_guard.accounts.keys()
                     .find(|k| get_short_addr(k) == req.target || **k == req.target).cloned() {
                     Some(found)
-                // FIX C11-H3: Allow sending to new addresses not yet in ledger
+                // Allow sending to new addresses not yet in ledger
                 // In block-lattice, Send only records target in `link`; recipient
                 // creates their own Receive block later.
                 } else if los_crypto::validate_address(&req.target) {
@@ -841,7 +868,7 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                 }
             };
             if let Some(target) = target_addr {
-                // FIX C11-C1: Checked multiplication to prevent u128 wrapping overflow
+                // Checked multiplication to prevent u128 wrapping overflow
                 // If amount_cil is provided (client-signed with sub-LOS precision),
                 // use it directly. Otherwise multiply LOS × CIL_PER_LOS.
                 let amt = if let Some(cil_amt) = req.amount_cil {
@@ -896,7 +923,7 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                 let base_fee = los_core::BASE_FEE_CIL; // Protocol constant from los-core
                 let final_fee: u128;
 
-                // DEADLOCK FIX #4a: Never hold L and AW simultaneously.
+                // DEADLOCK Never hold L and AW simultaneously.
                 // Step 1: Read state from Ledger, drop lock
                 let sender_state = {
                     let l_guard = safe_lock(&l);
@@ -919,7 +946,7 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                             .map(|(b, _)| b.amount)
                             .sum()
                     };
-                    // SECURITY FIX C-12: Use checked_add to prevent u128 overflow
+                    // Use checked_add to prevent u128 overflow
                     let total_needed = match amt.checked_add(final_fee).and_then(|v| v.checked_add(pending_total)) {
                         Some(total) => total,
                         None => {
@@ -977,6 +1004,18 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                         let sh = blk.signing_hash();
                         let sig_len = blk.signature.len() / 2; // hex → bytes
                         let pk_len = blk.public_key.len() / 2;
+                        // Log all block fields to help client diagnose signing_hash mismatch
+                        eprintln!("❌ [SIGN_FAIL] account={}", blk.account);
+                        eprintln!("❌ [SIGN_FAIL] previous={}", blk.previous);
+                        eprintln!("❌ [SIGN_FAIL] block_type={:?}", blk.block_type);
+                        eprintln!("❌ [SIGN_FAIL] amount={} CIL", blk.amount);
+                        eprintln!("❌ [SIGN_FAIL] link={}", blk.link);
+                        eprintln!("❌ [SIGN_FAIL] public_key_len={} chars ({} bytes)", blk.public_key.len(), pk_len);
+                        eprintln!("❌ [SIGN_FAIL] work={}", blk.work);
+                        eprintln!("❌ [SIGN_FAIL] timestamp={}", blk.timestamp);
+                        eprintln!("❌ [SIGN_FAIL] fee={} CIL", blk.fee);
+                        eprintln!("❌ [SIGN_FAIL] chain_id={} (CHAIN_ID constant)", los_core::CHAIN_ID);
+                        eprintln!("❌ [SIGN_FAIL] signing_hash={}", sh);
                         return api_json(serde_json::json!({
                             "status": "error",
                             "msg": format!("Invalid signature: verification failed (sig={} bytes, pk={} bytes). signing_hash={}", sig_len, pk_len, sh)
@@ -1016,10 +1055,10 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                 // Block ID sekarang mencakup signature
                 let hash = blk.calculate_hash();
 
-                // FIX v1.0.7+: Finalize immediately when:
+                // Finalize immediately when:
                 //   (a) Functional testnet (no consensus needed)
                 //
-                // DESIGN FIX D-2: Client-signed blocks MUST go through consensus on mainnet.
+                // DESIGN Client-signed blocks MUST go through consensus on mainnet.
                 // Previously, client_signed=true skipped consensus entirely, allowing a
                 // malicious user to submit the same signed block to multiple nodes
                 // simultaneously — each would independently apply it, causing permanent
@@ -1038,7 +1077,7 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                         // blk.fee is what's in the signed block (may be >= final_fee)
                         let actual_fee = blk.fee;
                         if let Some(sender_state) = l_guard.accounts.get_mut(&sender_addr) {
-                            // SECURITY FIX M-10: Chain-sequence validation — prevents double-spend.
+                            // Chain-sequence validation — prevents double-spend.
                             // In block-lattice, each block references its predecessor. If two
                             // blocks claim the same `previous`, only the first can be applied.
                             // Without this check, a malicious client could submit conflicting
@@ -1076,24 +1115,24 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                     println!("✅ Send finalized immediately ({}): {} → {} ({} LOS, fee {} CIL)",
                         reason, get_short_addr(&sender_addr), get_short_addr(&target), amt / CIL_PER_LOS, blk.fee);
 
-                    // GOSSIP FIX v1.0.10: Broadcast finalized Send block to peers using
+                    // GOSSIP Broadcast finalized Send block to peers using
                     // BLOCK_CONFIRMED format so all nodes apply via the P2P handler.
                     // Raw JSON gossip was silently ignored — peers only parse BLOCK_CONFIRMED.
                     let send_json = serde_json::to_string(&blk).unwrap_or_default();
                     let send_b64_for_gossip = base64::engine::general_purpose::STANDARD.encode(send_json.as_bytes());
 
                     // AUTO-UNREGISTER: If sender was a validator and balance dropped below
-                    // minimum stake after this send, automatically unregister them.
+                    // minimum registration stake (1 LOS) after this send, automatically unregister them.
                     {
                         let mut l_guard = safe_lock(&l);
                         if let Some(sender_acct) = l_guard.accounts.get_mut(&sender_addr) {
-                            if sender_acct.is_validator && sender_acct.balance < MIN_VALIDATOR_STAKE_CIL {
+                            if sender_acct.is_validator && sender_acct.balance < MIN_VALIDATOR_REGISTER_CIL {
                                 sender_acct.is_validator = false;
                                 SAVE_DIRTY.store(true, Ordering::Release);
-                                println!("⚠️ Auto-unregistered validator {}: balance {} < minimum stake {} LOS",
+                                println!("⚠️ Auto-unregistered validator {}: balance {} < minimum registration stake {} LOS",
                                     get_short_addr(&sender_addr),
                                     sender_acct.balance / CIL_PER_LOS,
-                                    MIN_VALIDATOR_STAKE_CIL / CIL_PER_LOS);
+                                    MIN_VALIDATOR_REGISTER_CIL / CIL_PER_LOS);
                             }
                         }
                     }
@@ -1136,7 +1175,7 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                                 recv_acct.block_count += 1;
                             }
                             l_guard.blocks.insert(recv_hash.clone(), recv_blk.clone());
-                            // SECURITY FIX M-4: Track claimed Send for double-receive prevention.
+                            // Track claimed Send for double-receive prevention.
                             // Direct ledger manipulation bypasses process_block() which normally
                             // inserts into claimed_sends. Without this, a second Receive referencing
                             // the same Send could pass the claimed_sends check in process_block().
@@ -1165,12 +1204,12 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                     }));
                 }
 
-                // CONSENSUS FIX: Start total_power_votes at 0 instead of initial_power.
+                // Start total_power_votes at 0 instead of initial_power.
                 // The sender doesn't self-vote — only distinct external validators contribute
                 // voting power via CONFIRM_RES. initial_power is kept for API response & mempool.
                 safe_lock(&p).insert(hash.clone(), (blk.clone(), 0u128));
 
-                // CONSENSUS FIX: Serialize block BEFORE mempool takes ownership.
+                // Serialize block BEFORE mempool takes ownership.
                 // Include block data (base64) so peers can validate and vote.
                 // Without this, peers receive CONFIRM_REQ but can't verify the block
                 // because it only exists locally in pending_sends — causing zero votes.
@@ -1212,7 +1251,7 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
         .and(with_state((p_burn, tx_burn, my_address.clone(), l_burn, bl_burn, (pk_burn, sk_burn, bv_burn))))
         .then(#[allow(clippy::type_complexity)] |body: bytes::Bytes, (p, tx, my_addr, l, rate_lim, (node_pk, node_sk, bv)): (Arc<Mutex<HashMap<String, (u128, u128, String, u128, u64, String)>>>, mpsc::Sender<String>, String, Arc<Mutex<Ledger>>, Arc<EndpointRateLimiter>, (Vec<u8>, Zeroizing<Vec<u8>>, Arc<Mutex<HashMap<String, HashSet<String>>>>))| async move {
 
-            // FIX BUG-3: Parse JSON manually to return proper 400 instead of 500
+            // Parse JSON manually to return proper 400 instead of 500
             let req: BurnRequest = match serde_json::from_slice(&body) {
                 Ok(r) => r,
                 Err(e) => {
@@ -1227,7 +1266,7 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
             // 1. Sanitize TXID
             let clean_txid = req.txid.trim().trim_start_matches("0x").to_lowercase();
 
-            // SECURITY FIX: Validate TXID format (must be hex, 64 chars for ETH, 64 for BTC)
+            // Validate TXID format (must be hex, 64 chars for ETH, 64 for BTC)
             if clean_txid.is_empty() || clean_txid.len() > 128 || !clean_txid.chars().all(|c| c.is_ascii_hexdigit()) {
                 return api_json(serde_json::json!({
                     "status": "error",
@@ -1235,7 +1274,7 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                 }));
             }
 
-            // FIX: Validate coin_type — only "eth" and "btc" are supported
+            // Validate coin_type — only "eth" and "btc" are supported
             let coin_lower = req.coin_type.to_lowercase();
             if coin_lower != "eth" && coin_lower != "btc" {
                 return api_json(serde_json::json!({
@@ -1244,7 +1283,7 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                 }));
             }
 
-            // FIX: Validate recipient_address format if provided
+            // Validate recipient_address format if provided
             if let Some(ref addr) = req.recipient_address {
                 if !los_crypto::validate_address(addr) {
                     return api_json(serde_json::json!({
@@ -1319,7 +1358,7 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
             let (in_ledger, my_power) = {
                 let l_guard = safe_lock(&l);
                 let exists = l_guard.blocks.values().any(|b| b.block_type == BlockType::Mint && b.link.contains(&clean_txid));
-                // SECURITY FIX C-03: Self-vote must use linear voting power
+                // Self-vote must use linear voting power
                 // consistent with external VOTE_RES accumulation (× 1000 scale).
                 // Now: calculate_voting_power(balance) * 1000 (matches VOTE_RES path)
                 let balance = l_guard.accounts.get(&my_addr).map(|a| a.balance).unwrap_or(0);
@@ -1361,7 +1400,7 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                     }));
                 }
 
-                // SECURITY FIX NEW#3: Pure integer math via calculate_mint_cil()
+                // Pure integer math via calculate_mint_cil()
                 let los_to_mint = match calculate_mint_cil(amt, prc, sym) {
                     Ok(v) => v,
                     Err(e) => {
@@ -1479,8 +1518,11 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                 } else {
                     BURN_CONSENSUS_THRESHOLD
                 };
-                // SECURITY FIX C-03: Dynamic min_voters based on active validator count
-                let active_vc = safe_lock(&l).accounts.values().filter(|a| a.balance >= MIN_VALIDATOR_STAKE_CIL).count();
+                // Dynamic min_voters based on active validator count
+                // Must filter by is_validator — treasury wallets have high balance but
+                // are NOT validators and don't run nodes. Without this, non-validator
+                // accounts inflate vc, making min_distinct_voters unreachable.
+                let active_vc = safe_lock(&l).accounts.values().filter(|a| a.is_validator && a.balance >= MIN_VALIDATOR_STAKE_CIL).count();
                 let min_voters = if !testnet_config::get_testnet_config().should_enable_consensus() {
                     1
                 } else {
@@ -2143,10 +2185,7 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
     let node_info_route = warp::path("node-info")
         .and(with_state((l_info, ab_info)))
         .map(
-            move |(l, ab): (
-                Arc<Mutex<Ledger>>,
-                Arc<Mutex<HashMap<String, String>>>,
-            )| {
+            move |(l, ab): (Arc<Mutex<Ledger>>, Arc<Mutex<HashMap<String, String>>>)| {
                 let l_guard = safe_lock(&l);
                 // Protocol constant: 21,936,236 LOS total supply (immutable)
                 // Validated against genesis_config.json on mainnet startup
@@ -2327,25 +2366,24 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
         });
 
     // 13b. GET /fee-estimate/:address (returns flat base fee — no dynamic scaling)
-    let fee_estimate_route = warp::path!("fee-estimate" / String)
-        .map(|addr: String| {
-            // Validate address format (Base58Check with LOS prefix)
-            if !los_crypto::validate_address(&addr) {
-                return api_json(serde_json::json!({
-                    "status": "error",
-                    "code": 400,
-                    "msg": "Invalid address format. Must be Base58Check with LOS prefix."
-                }));
-            }
-            let base_fee = los_core::BASE_FEE_CIL;
-            api_json(serde_json::json!({
-                "address": addr,
-                "base_fee_cil": base_fee,
-                "estimated_fee_cil": base_fee,
-                "fee_multiplier": 1,
-                "fee_multiplier_bps": 10_000
-            }))
-        });
+    let fee_estimate_route = warp::path!("fee-estimate" / String).map(|addr: String| {
+        // Validate address format (Base58Check with LOS prefix)
+        if !los_crypto::validate_address(&addr) {
+            return api_json(serde_json::json!({
+                "status": "error",
+                "code": 400,
+                "msg": "Invalid address format. Must be Base58Check with LOS prefix."
+            }));
+        }
+        let base_fee = los_core::BASE_FEE_CIL;
+        api_json(serde_json::json!({
+            "address": addr,
+            "base_fee_cil": base_fee,
+            "estimated_fee_cil": base_fee,
+            "fee_multiplier": 1,
+            "fee_multiplier_bps": 10_000
+        }))
+    });
 
     // ──────────────────────────────────────────────────────────────────
     // 13c. GET /mining-info — Current epoch, difficulty, reward for miners
@@ -2423,7 +2461,7 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
         .and(warp::body::bytes())
         .and(with_state((l_faucet, db_faucet, fl_faucet, pk_faucet, sk_faucet, tx_faucet)))
         .then(#[allow(clippy::type_complexity)] |body: bytes::Bytes, (l, db, rate_lim, node_pk, node_sk, tx): (Arc<Mutex<Ledger>>, Arc<LosDatabase>, Arc<EndpointRateLimiter>, Vec<u8>, Zeroizing<Vec<u8>>, mpsc::Sender<String>)| async move {
-            // FIX: Parse JSON manually to return proper error instead of 500
+            // Parse JSON manually to return proper error instead of 500
             let req: serde_json::Value = match serde_json::from_slice(&body) {
                 Ok(r) => r,
                 Err(e) => {
@@ -2460,7 +2498,7 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                 }));
             }
 
-            // FIX: Validate address format (Base58Check with LOS prefix)
+            // Validate address format (Base58Check with LOS prefix)
             if !los_crypto::validate_address(address) {
                 return api_json(serde_json::json!({
                     "status": "error",
@@ -2488,7 +2526,7 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                 }));
             }
 
-            let faucet_amount = 5_000u128 * CIL_PER_LOS; // 5k LOS (reduced from 100k to prevent exceeding validator stake)
+            let faucet_amount = FAUCET_AMOUNT_CIL; // 5k LOS per faucet request (testnet only)
 
             // All ledger work in a contained scope so MutexGuard is dropped before .await
             let faucet_result: Result<(String, String, u128, u128), String> = {
@@ -2511,7 +2549,7 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                     is_validator: false,
                 });
 
-                // CRITICAL FIX: Create proper Mint block with PoW + signature, use process_block()
+                // Create proper Mint block with PoW + signature, use process_block()
                 // This ensures remaining_supply is properly deducted
                 let mut faucet_block = Block {
                     account: address.to_string(),
@@ -2582,7 +2620,7 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
         .and(warp::body::bytes())
         .and(with_state(l_reset))
         .map(|body: bytes::Bytes, l: Arc<Mutex<Ledger>>| {
-            // FIX: Parse JSON manually to return proper 400 instead of 500
+            // Parse JSON manually to return proper 400 instead of 500
             let req: serde_json::Value = match serde_json::from_slice(&body) {
                 Ok(r) => r,
                 Err(e) => {
@@ -2669,7 +2707,7 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
         .and(with_state(l_blocks))
         .map(|l: Arc<Mutex<Ledger>>| {
             let l_guard = safe_lock(&l);
-            // SECURITY FIX #13: Sort by timestamp descending for deterministic recent blocks
+            // Sort by timestamp descending for deterministic recent blocks
             let mut block_list: Vec<(&String, &Block)> = l_guard.blocks.iter().collect();
             block_list.sort_by(|a, b| b.1.timestamp.cmp(&a.1.timestamp));
             let blocks: Vec<serde_json::Value> = block_list
@@ -2721,7 +2759,7 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                 });
 
             // Get transaction history for this account
-            // FIX v1.0.7: Include from, to, timestamp fields + resolve actual
+            // Include from, to, timestamp fields + resolve actual
             // sender for Receive blocks (look up originating Send block)
             let mut transactions: Vec<serde_json::Value> = Vec::new();
             for (hash, block) in l_guard.blocks.iter() {
@@ -3182,7 +3220,7 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                 let abft_guard = safe_lock(&abft);
                 let l_guard = safe_lock(&l);
                 let stats = abft_guard.get_statistics();
-                // FIX: active_validators must only count accounts that are BOTH
+                // active_validators must only count accounts that are BOTH
                 // registered validators AND have sufficient stake. Previously this
                 // counted all accounts with enough balance, inflating the number.
                 let active_validators = l_guard
@@ -3243,7 +3281,7 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                         "join_epoch": v.join_epoch,
                         "joined_this_epoch": joined_this_epoch,
                         "stake_cil": v.stake_cil,
-                        "uptime_pct": v.uptime_pct(),
+                        "uptime_pct": v.display_uptime_pct(),
                         "cumulative_rewards_cil": v.cumulative_rewards_cil,
                         "eligible": v.is_eligible(pool.current_epoch),
                         "heartbeats_current_epoch": v.heartbeats_current_epoch,
@@ -3308,7 +3346,7 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
             let ve_inner = ve_regval.clone();
             let lrv_inner = lrv_regval.clone();
             async move {
-            // FIX: Parse JSON manually to return proper 400 instead of 500
+            // Parse JSON manually to return proper 400 instead of 500
             let req: serde_json::Value = match serde_json::from_slice(&body) {
                 Ok(r) => r,
                 Err(e) => {
@@ -3395,7 +3433,7 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                 }));
             }
 
-            // 5. Check balance >= MIN_VALIDATOR_STAKE_CIL
+            // 5. Check balance >= MIN_VALIDATOR_REGISTER_CIL (1 LOS)
             let (balance, already_validator) = {
                 let l_guard = safe_lock(&l);
                 match l_guard.accounts.get(&address) {
@@ -3414,8 +3452,8 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                 }));
             }
 
-            if balance < MIN_VALIDATOR_STAKE_CIL {
-                let min_los = MIN_VALIDATOR_STAKE_CIL / CIL_PER_LOS;
+            if balance < MIN_VALIDATOR_REGISTER_CIL {
+                let min_los = MIN_VALIDATOR_REGISTER_CIL / CIL_PER_LOS;
                 let current_los = balance / CIL_PER_LOS;
                 return api_json(serde_json::json!({
                     "status": "error",
@@ -3463,7 +3501,7 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                 let mut validators: Vec<String> = l_guard
                     .accounts
                     .iter()
-                    .filter(|(_, a)| a.balance >= MIN_VALIDATOR_STAKE_CIL && a.is_validator)
+                    .filter(|(_, a)| a.balance >= MIN_VALIDATOR_REGISTER_CIL && a.is_validator)
                     .map(|(addr, _)| addr.clone())
                     .collect();
                 validators.sort();
@@ -3694,7 +3732,7 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                 let mut validators: Vec<String> = l_guard
                     .accounts
                     .iter()
-                    .filter(|(_, a)| a.balance >= MIN_VALIDATOR_STAKE_CIL && a.is_validator)
+                    .filter(|(_, a)| a.balance >= MIN_VALIDATOR_REGISTER_CIL && a.is_validator)
                     .map(|(addr, _)| addr.clone())
                     .collect();
                 validators.sort();
@@ -3770,8 +3808,10 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
         .then(unregister_handler);
 
     // 30. GET /network/peers — Lightweight endpoint for Flutter peer discovery.
-    // Returns only the list of known validator .onion endpoints so Flutter apps
+    // Returns all known validator endpoints (clearnet and/or onion) so Flutter apps
     // can discover new nodes beyond the hardcoded bootstrap list.
+    // Each entry includes `transport` field ("onion" or "clearnet") so clients
+    // can decide whether Tor SOCKS5 proxy is needed.
     let ve_discovery = validator_endpoints.clone();
     let ab_discovery = address_book.clone();
     let l_discovery = ledger.clone();
@@ -3790,10 +3830,10 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                 let ve_guard = safe_lock(&ve);
                 let l_guard = safe_lock(&l);
 
-                // All known validator onion endpoints
+                // All known validator endpoints (clearnet and/or onion)
                 let endpoints: Vec<serde_json::Value> = ve_guard
                     .iter()
-                    .map(|(addr, onion)| {
+                    .map(|(addr, host)| {
                         let stake = l_guard
                             .accounts
                             .get(addr)
@@ -3801,9 +3841,23 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                             .unwrap_or(0);
                         let in_peers = ab_guard.values().any(|v| v.contains(addr.as_str()));
                         let is_self = addr == &my_addr_discovery;
+                        let transport = if host.contains(".onion") {
+                            "onion"
+                        } else {
+                            "clearnet"
+                        };
+                        // Extract rest_port from host string (e.g. "127.0.0.1:7030" → 7030)
+                        let rest_port: u16 = host
+                            .rsplit(':')
+                            .next()
+                            .and_then(|p| p.parse().ok())
+                            .unwrap_or(80);
                         serde_json::json!({
                             "address": addr,
-                            "onion_address": onion,
+                            "host_address": host,
+                            "onion_address": host, // backward compat
+                            "transport": transport,
+                            "rest_port": rest_port,
                             "stake_los": stake,
                             "reachable": is_self || in_peers,
                         })
@@ -3844,6 +3898,286 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                 }
             }))
         });
+
+    // ── PEER DIRECTORY ──────────────────────────────────────────────
+    // Embedded peer directory: every validator serves a live HTML page
+    // listing all known validators with their current status.
+    // No separate server/VPS needed — runs forever as part of the node.
+    //
+    // Routes:
+    //   GET /directory              → HTML page (human-readable)
+    //   GET /directory/api/peers    → All peers JSON (for apps)
+    //   GET /directory/api/active   → Active peers only JSON
+    // ────────────────────────────────────────────────────────────────
+
+    // GET /directory — Dark-themed HTML page showing all known validators
+    let ve_dir_html = validator_endpoints.clone();
+    let ab_dir_html = address_book.clone();
+    let l_dir_html = ledger.clone();
+    let bv_dir_html = bootstrap_validators.clone();
+    let my_addr_dir_html = my_address.clone();
+    let directory_html_route = warp::path("directory")
+        .and(warp::path::end())
+        .and(with_state((ve_dir_html, ab_dir_html, l_dir_html)))
+        .map(
+            move |(ve, ab, l): (
+                Arc<Mutex<HashMap<String, String>>>,
+                Arc<Mutex<HashMap<String, String>>>,
+                Arc<Mutex<Ledger>>,
+            )| {
+                let ab_guard = safe_lock(&ab);
+                let ve_guard = safe_lock(&ve);
+                let l_guard = safe_lock(&l);
+
+                let network = if los_core::is_mainnet_build() { "Mainnet" } else { "Testnet" };
+                let uptime_secs = start_time.elapsed().as_secs();
+                let uptime_str = format_uptime(uptime_secs);
+
+                // Build peer list from validator_endpoints
+                let mut peers: Vec<(String, String, String, bool, u128, bool)> = Vec::new();
+
+                for (addr, host) in ve_guard.iter() {
+                    let in_peers = ab_guard.values().any(|v| v == addr);
+                    let is_self = addr == &my_addr_dir_html;
+                    let active = is_self || in_peers;
+                    let stake = l_guard.accounts.get(addr)
+                        .map(|a| a.balance / CIL_PER_LOS)
+                        .unwrap_or(0);
+                    let transport = if host.contains(".onion") { "onion" } else { "clearnet" };
+                    let is_bootstrap = bv_dir_html.contains(addr);
+                    peers.push((addr.clone(), host.clone(), transport.to_string(), active, stake, is_bootstrap));
+                }
+
+                // Sort: active first, then by stake
+                peers.sort_by(|a, b| b.3.cmp(&a.3).then_with(|| b.4.cmp(&a.4)));
+
+                let active_count = peers.iter().filter(|p| p.3).count();
+                let total = peers.len();
+
+                // Build table rows
+                let mut rows = String::new();
+                for (addr, host, transport, active, stake, is_bootstrap) in &peers {
+                    let status_dot = if *active {
+                        r#"<span class="dot active"></span>"#
+                    } else {
+                        r#"<span class="dot inactive"></span>"#
+                    };
+                    let transport_badge = if transport == "onion" {
+                        r#"<span class="badge onion">🧅 onion</span>"#
+                    } else {
+                        r#"<span class="badge clearnet">🌐 clearnet</span>"#
+                    };
+                    let bootstrap_badge = if *is_bootstrap {
+                        r#" <span class="badge bootstrap">⚡ genesis</span>"#
+                    } else { "" };
+
+                    let addr_short = if addr.len() > 16 {
+                        format!("{}…{}", &addr[..8], &addr[addr.len()-6..])
+                    } else { addr.clone() };
+
+                    let host_display = if host.len() > 40 {
+                        format!("{}…{}", &host[..20], &host[host.len()-12..])
+                    } else { host.clone() };
+
+                    let rest_url = if host.contains("://") { host.clone() } else { format!("http://{}", host) };
+
+                    rows.push_str(&format!(
+                        r#"<tr>
+                            <td>{status_dot}</td>
+                            <td class="mono addr" title="{addr}">{addr_short}{bootstrap_badge}</td>
+                            <td class="mono host" title="{rest_url}">
+                                <span>{host_display}</span>
+                                <button class="copy-btn" onclick="copyText('{rest_url}')">📋</button>
+                            </td>
+                            <td>{transport_badge}</td>
+                            <td class="mono">{stake} LOS</td>
+                        </tr>"#
+                    ));
+                }
+
+                let now_str = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string();
+
+                let html = format!(
+                    r##"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="refresh" content="60">
+<title>LOS Peer Directory — {network}</title>
+<style>
+*{{margin:0;padding:0;box-sizing:border-box;}}
+body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,monospace;background:#0d1117;color:#c9d1d9;min-height:100vh;}}
+.container{{max-width:1100px;margin:0 auto;padding:20px;}}
+h1{{font-size:24px;color:#58a6ff;margin-bottom:4px;}}
+.subtitle{{color:#8b949e;margin-bottom:20px;font-size:14px;}}
+.stats{{display:flex;gap:24px;flex-wrap:wrap;margin-bottom:20px;padding:12px 16px;background:#161b22;border:1px solid #30363d;border-radius:6px;}}
+.stat{{display:flex;flex-direction:column;}}
+.stat-label{{font-size:11px;color:#8b949e;text-transform:uppercase;}}
+.stat-value{{font-size:18px;font-weight:600;color:#f0f6fc;}}
+.stat-value.green{{color:#3fb950;}}
+table{{width:100%;border-collapse:collapse;background:#161b22;border:1px solid #30363d;border-radius:6px;overflow:hidden;}}
+th{{text-align:left;padding:10px 12px;background:#21262d;color:#8b949e;font-size:12px;text-transform:uppercase;border-bottom:1px solid #30363d;}}
+td{{padding:8px 12px;border-bottom:1px solid #21262d;font-size:13px;}}
+tr:hover{{background:#1c2128;}}
+.mono{{font-family:'SF Mono','Fira Code',monospace;font-size:12px;}}
+.dot{{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:4px;}}
+.dot.active{{background:#3fb950;box-shadow:0 0 6px #3fb950;}}
+.dot.inactive{{background:#484f58;}}
+.badge{{padding:2px 8px;border-radius:10px;font-size:11px;font-weight:500;}}
+.badge.onion{{background:#2d1f4e;color:#a371f7;}}
+.badge.clearnet{{background:#0d2818;color:#3fb950;}}
+.badge.bootstrap{{background:#1c2541;color:#58a6ff;}}
+.host{{position:relative;}}
+.copy-btn{{background:none;border:none;cursor:pointer;font-size:12px;opacity:0.4;margin-left:4px;padding:2px;}}
+.copy-btn:hover{{opacity:1;}}
+.api-section{{margin-top:24px;padding:16px;background:#161b22;border:1px solid #30363d;border-radius:6px;}}
+.api-section h3{{color:#58a6ff;font-size:14px;margin-bottom:8px;}}
+.api-section code{{background:#0d1117;padding:3px 8px;border-radius:4px;color:#79c0ff;font-size:12px;}}
+.api-row{{margin:6px 0;}}
+footer{{margin-top:24px;text-align:center;color:#484f58;font-size:12px;}}
+footer a{{color:#58a6ff;text-decoration:none;}}
+.toast{{position:fixed;bottom:20px;right:20px;background:#238636;color:#fff;padding:10px 20px;border-radius:6px;display:none;font-size:13px;z-index:100;}}
+@media(max-width:700px){{.addr{{display:none;}}.stats{{gap:12px;}}}}
+</style>
+</head>
+<body>
+<div class="container">
+    <h1>🔗 LOS Peer Directory</h1>
+    <p class="subtitle">Unauthority Network — {network} | Auto-refreshes every 60s | Served by this validator node</p>
+    <div class="stats">
+        <div class="stat"><span class="stat-label">Active Nodes</span><span class="stat-value green">{active_count} / {total}</span></div>
+        <div class="stat"><span class="stat-label">Last Updated</span><span class="stat-value">{now_str}</span></div>
+        <div class="stat"><span class="stat-label">Node Uptime</span><span class="stat-value">{uptime_str}</span></div>
+    </div>
+    <table>
+        <thead><tr><th>Status</th><th class="addr">Address</th><th>Host</th><th>Type</th><th>Stake</th></tr></thead>
+        <tbody>{rows}</tbody>
+    </table>
+    <div class="api-section">
+        <h3>📡 API Endpoints (for apps &amp; scripts)</h3>
+        <div class="api-row"><code>GET /directory/api/peers</code> — All known peers (JSON)</div>
+        <div class="api-row"><code>GET /directory/api/active</code> — Active peers only (JSON) — <em>use this in your app</em></div>
+        <div class="api-row"><code>GET /network/peers</code> — Full peer data with stake info</div>
+    </div>
+    <footer>
+        <p>LOS Peer Directory — embedded in every validator node</p>
+        <p>Any validator's .onion address + /directory = this page. No extra server needed.</p>
+        <p><a href="https://github.com/AurelMoonworker/unauthority-core" target="_blank">GitHub</a></p>
+    </footer>
+</div>
+<div class="toast" id="toast">✅ Copied!</div>
+<script>
+function copyText(text){{navigator.clipboard.writeText(text).then(function(){{var t=document.getElementById('toast');t.style.display='block';setTimeout(function(){{t.style.display='none';}},1500);}});}}
+</script>
+</body>
+</html>"##);
+
+                warp::reply::html(html)
+            },
+        );
+
+    // GET /directory/api/peers — All known peers as JSON
+    let ve_dir_api = validator_endpoints.clone();
+    let ab_dir_api = address_book.clone();
+    let l_dir_api = ledger.clone();
+    let bv_dir_api = bootstrap_validators.clone();
+    let my_addr_dir_api = my_address.clone();
+    let directory_api_peers_route = warp::path!("directory" / "api" / "peers")
+        .and(with_state((ve_dir_api, ab_dir_api, l_dir_api)))
+        .map(
+            move |(ve, ab, l): (
+                Arc<Mutex<HashMap<String, String>>>,
+                Arc<Mutex<HashMap<String, String>>>,
+                Arc<Mutex<Ledger>>,
+            )| {
+                let ab_guard = safe_lock(&ab);
+                let ve_guard = safe_lock(&ve);
+                let l_guard = safe_lock(&l);
+
+                let network = if los_core::is_mainnet_build() { "mainnet" } else { "testnet" };
+                let mut peers: Vec<serde_json::Value> = Vec::new();
+
+                for (addr, host) in ve_guard.iter() {
+                    let in_peers = ab_guard.values().any(|v| v == addr);
+                    let is_self = addr == &my_addr_dir_api;
+                    let active = is_self || in_peers;
+                    let stake = l_guard.accounts.get(addr)
+                        .map(|a| a.balance / CIL_PER_LOS)
+                        .unwrap_or(0);
+                    let transport = if host.contains(".onion") { "onion" } else { "clearnet" };
+                    let rest_port: u16 = host.rsplit(':').next()
+                        .and_then(|p| p.parse().ok())
+                        .unwrap_or(80);
+                    let is_bootstrap = bv_dir_api.contains(addr);
+
+                    peers.push(serde_json::json!({
+                        "address": addr,
+                        "host": if host.contains("://") { host.clone() } else { format!("http://{}", host) },
+                        "transport": transport,
+                        "active": active,
+                        "stake_los": stake,
+                        "rest_port": rest_port,
+                        "is_bootstrap": is_bootstrap,
+                    }));
+                }
+
+                let active_count = peers.iter().filter(|p| p["active"].as_bool().unwrap_or(false)).count();
+                api_json(serde_json::json!({
+                    "network": network,
+                    "active_count": active_count,
+                    "total_count": peers.len(),
+                    "peers": peers,
+                    "updated_at": chrono::Utc::now().to_rfc3339(),
+                }))
+            },
+        );
+
+    // GET /directory/api/active — Active peers only JSON (for app bootstrapping)
+    let ve_dir_active = validator_endpoints.clone();
+    let ab_dir_active = address_book.clone();
+    let l_dir_active = ledger.clone();
+    let my_addr_dir_active = my_address.clone();
+    let directory_api_active_route = warp::path!("directory" / "api" / "active")
+        .and(with_state((ve_dir_active, ab_dir_active, l_dir_active)))
+        .map(
+            move |(ve, ab, l): (
+                Arc<Mutex<HashMap<String, String>>>,
+                Arc<Mutex<HashMap<String, String>>>,
+                Arc<Mutex<Ledger>>,
+            )| {
+                let ab_guard = safe_lock(&ab);
+                let ve_guard = safe_lock(&ve);
+                let _l_guard = safe_lock(&l);
+
+                let network = if los_core::is_mainnet_build() { "mainnet" } else { "testnet" };
+                let mut active_peers: Vec<serde_json::Value> = Vec::new();
+
+                for (addr, host) in ve_guard.iter() {
+                    let in_peers = ab_guard.values().any(|v| v == addr);
+                    let is_self = addr == &my_addr_dir_active;
+                    if !is_self && !in_peers { continue; }
+
+                    let rest_port: u16 = host.rsplit(':').next()
+                        .and_then(|p| p.parse().ok())
+                        .unwrap_or(80);
+
+                    active_peers.push(serde_json::json!({
+                        "host": if host.contains("://") { host.clone() } else { format!("http://{}", host) },
+                        "address": addr,
+                        "transport": if host.contains(".onion") { "onion" } else { "clearnet" },
+                        "rest_port": rest_port,
+                    }));
+                }
+
+                api_json(serde_json::json!({
+                    "network": network,
+                    "active_count": active_peers.len(),
+                    "peers": active_peers,
+                    "updated_at": chrono::Utc::now().to_rfc3339(),
+                }))
+            },
+        );
 
     // Combine all routes with rate limiting
     // NOTE: Each route is .boxed() to prevent warp type recursion overflow (E0275)
@@ -3912,12 +4246,20 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
         .or(dex_position_route.boxed())
         .boxed();
 
+    // Peer Directory routes (embedded in every validator)
+    let group7 = directory_html_route
+        .boxed()
+        .or(directory_api_peers_route.boxed())
+        .or(directory_api_active_route.boxed())
+        .boxed();
+
     let routes = group1
         .or(group2)
         .or(group3)
         .or(group4)
         .or(group5)
         .or(group6)
+        .or(group7)
         .with(cors) // Apply CORS
         .with(warp::log("api"))
         .recover(handle_rejection);
@@ -3939,7 +4281,10 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
         let my_addr_bg = my_address.clone();
 
         tokio::spawn(async move {
-            println!("⛏️  Mining thread started (address: {})", get_short_addr(&my_addr_bg));
+            println!(
+                "⛏️  Mining thread started (address: {})",
+                get_short_addr(&my_addr_bg)
+            );
             let cancel = Arc::new(AtomicBool::new(false));
 
             loop {
@@ -3970,7 +4315,10 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                 }; // ms guard dropped here
 
                 if let Some(remaining_secs) = already_mined_wait {
-                    println!("⛏️  Already mined epoch {} — waiting {}s for next epoch", epoch, remaining_secs);
+                    println!(
+                        "⛏️  Already mined epoch {} — waiting {}s for next epoch",
+                        epoch, remaining_secs
+                    );
                     tokio::time::sleep(Duration::from_secs(remaining_secs.max(5))).await;
                     continue;
                 }
@@ -3994,17 +4342,24 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                         // Multi-threaded mining: first thread to find a nonce cancels others
                         use std::sync::mpsc as std_mpsc;
                         let (sender, receiver) = std_mpsc::channel();
-                        let threads: Vec<_> = (0..mining_threads_count).map(|_t| {
-                            let addr = addr_clone.clone();
-                            let cancel = cancel_clone.clone();
-                            let tx = sender.clone();
-                            std::thread::spawn(move || {
-                                if let Some(nonce) = los_core::pow_mint::mine(&addr, epoch, difficulty_bits, &cancel) {
-                                    let _ = tx.send(nonce);
-                                    cancel.store(true, Ordering::Release); // Cancel other threads
-                                }
+                        let threads: Vec<_> = (0..mining_threads_count)
+                            .map(|_t| {
+                                let addr = addr_clone.clone();
+                                let cancel = cancel_clone.clone();
+                                let tx = sender.clone();
+                                std::thread::spawn(move || {
+                                    if let Some(nonce) = los_core::pow_mint::mine(
+                                        &addr,
+                                        epoch,
+                                        difficulty_bits,
+                                        &cancel,
+                                    ) {
+                                        let _ = tx.send(nonce);
+                                        cancel.store(true, Ordering::Release); // Cancel other threads
+                                    }
+                                })
                             })
-                        }).collect();
+                            .collect();
                         drop(sender);
                         let result = receiver.recv().ok();
                         cancel_clone.store(true, Ordering::Release); // Ensure all threads stop
@@ -4013,10 +4368,15 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                         }
                         result
                     }
-                }).await.unwrap_or(None);
+                })
+                .await
+                .unwrap_or(None);
 
                 if let Some(nonce) = found {
-                    println!("⛏️  Found valid nonce {} for epoch {} (difficulty: {} bits)", nonce, epoch, difficulty_bits);
+                    println!(
+                        "⛏️  Found valid nonce {} for epoch {} (difficulty: {} bits)",
+                        nonce, epoch, difficulty_bits
+                    );
 
                     // Submit proof to mining state
                     let proof = los_core::pow_mint::MiningProof {
@@ -4048,7 +4408,8 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                         let l = safe_lock(&l_bg);
                         let acc = l.accounts.get(&my_addr_bg);
                         (
-                            acc.map(|a| a.head.clone()).unwrap_or_else(|| "0".to_string()),
+                            acc.map(|a| a.head.clone())
+                                .unwrap_or_else(|| "0".to_string()),
                             acc.map(|a| a.block_count).unwrap_or(0),
                         )
                     };
@@ -4070,13 +4431,14 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                     solve_pow(&mut mint_block);
 
                     // Sign block
-                    mint_block.signature = match try_sign_hex(mint_block.signing_hash().as_bytes(), &sk_bg) {
-                        Ok(sig) => sig,
-                        Err(e) => {
-                            eprintln!("⛏️  Signing failed: {} — skipping", e);
-                            continue;
-                        }
-                    };
+                    mint_block.signature =
+                        match try_sign_hex(mint_block.signing_hash().as_bytes(), &sk_bg) {
+                            Ok(sig) => sig,
+                            Err(e) => {
+                                eprintln!("⛏️  Signing failed: {} — skipping", e);
+                                continue;
+                            }
+                        };
 
                     // Process locally
                     let process_ok = {
@@ -4089,7 +4451,8 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                             Err(e) => {
                                 eprintln!("⛏️  Mint block rejected: {}", e);
                                 // Revert mining state
-                                let mut ms: std::sync::MutexGuard<'_, MiningState> = safe_lock(&ms_bg);
+                                let mut ms: std::sync::MutexGuard<'_, MiningState> =
+                                    safe_lock(&ms_bg);
                                 ms.current_epoch_miners.remove(&my_addr_bg);
                                 false
                             }
@@ -4117,9 +4480,9 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
         });
     }
 
-    // SECURITY FIX V4#11: Bind to 127.0.0.1 for Tor/production (prevents IP leak)
+    // Bind to 127.0.0.1 for Tor/production (prevents IP leak)
     // Set LOS_BIND_ALL=1 for local dev with multiple machines
-    // FIX: Check for "1" specifically to prevent accidental exposure (e.g., LOS_BIND_ALL=0)
+    // Check for "1" specifically to prevent accidental exposure (e.g., LOS_BIND_ALL=0)
     let bind_addr: [u8; 4] = if std::env::var("LOS_BIND_ALL").unwrap_or_default() == "1" {
         [0, 0, 0, 0]
     } else {
@@ -4170,7 +4533,7 @@ async fn handle_rejection(
             warp::http::StatusCode::NOT_FOUND,
         ))
     } else if let Some(e) = err.find::<warp::filters::body::BodyDeserializeError>() {
-        // FIX: Return proper 400 for malformed JSON / type errors
+        // Return proper 400 for malformed JSON / type errors
         // (negative amounts, floats for u128, null fields, missing fields, etc.)
         let detail = e.to_string();
         let json = warp::reply::json(&serde_json::json!({
@@ -4275,7 +4638,7 @@ async fn get_crypto_prices() -> (u128, u128) {
         let whole: u128 = parts[0].parse().ok()?;
         let frac_micro = if parts.len() > 1 {
             // Pad or truncate to 6 decimal places (micro-USD)
-            // SECURITY FIX C-NEW-01: Use fill='0', align='<' format spec.
+            // Use fill='0', align='<' format spec.
             // `{:<06}` is WRONG for strings — the '0' flag only works for numeric types;
             // for strings it pads with spaces, silently corrupting fractional cents.
             // `{:0<6}` correctly zero-pads: "50" → "500000" (not "50    ").
@@ -4387,7 +4750,7 @@ async fn get_crypto_prices() -> (u128, u128) {
         sum / btc_prices.len() as u128
     };
 
-    // SECURITY FIX #15: Sanity bounds to reject manipulated prices (micro-USD)
+    // Sanity bounds to reject manipulated prices (micro-USD)
     // ETH reasonable range: $10 - $100,000 | BTC reasonable range: $100 - $10,000,000
     const ETH_MIN_MICRO: u128 = 10 * MICRO; // $10
     const ETH_MAX_MICRO: u128 = 100_000 * MICRO; // $100,000
@@ -4469,7 +4832,11 @@ fn parse_iso8601_to_unix(s: &str) -> Option<u64> {
 
     // Days from epoch (1970-01-01) using a simplified formula
     // Adjust month: Jan/Feb are months 13/14 of previous year
-    let (y, m) = if month <= 2 { (year - 1, month + 12) } else { (year, month) };
+    let (y, m) = if month <= 2 {
+        (year - 1, month + 12)
+    } else {
+        (year, month)
+    };
     // Julian Day Number calculation (Gregorian calendar)
     let jdn = 365 * y + y / 4 - y / 100 + y / 400 + (153 * (m - 3) + 2) / 5 + day - 719469;
     Some(jdn * 86400 + hour * 3600 + min * 60 + sec)
@@ -4489,7 +4856,10 @@ async fn verify_eth_burn_tx(txid: &str) -> Option<(u128, u64)> {
                 "🧪 TESTNET: Accepting ETH TXID {} with mock amount 0.01 ETH",
                 &clean_txid[..16]
             );
-            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
             return Some((10_000_000_000_000_000, now)); // 0.01 ETH in wei (~30 LOS)
         }
         return None;
@@ -4630,7 +5000,10 @@ async fn verify_btc_burn_tx(txid: &str) -> Option<(u128, u64)> {
                 "🧪 TESTNET: Accepting BTC TXID {} with mock amount 0.001 BTC",
                 &clean_txid[..16]
             );
-            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
             return Some((100_000, now)); // 0.001 BTC in satoshi (~69 LOS)
         }
         return None;
@@ -4712,9 +5085,8 @@ async fn verify_btc_burn_tx(txid: &str) -> Option<(u128, u64)> {
                                 if let Some(vout) = json["vout"].as_array() {
                                     // Extract block_time from mempool.space response:
                                     // json["status"]["block_time"] is unix timestamp (u64)
-                                    let block_time: u64 = json["status"]["block_time"]
-                                        .as_u64()
-                                        .unwrap_or(0);
+                                    let block_time: u64 =
+                                        json["status"]["block_time"].as_u64().unwrap_or(0);
                                     println!("🌐 BTC price [{}]: TX has {} outputs, block_time={}, checking for burn address...", label, vout.len(), block_time);
                                     for (i, out) in vout.iter().enumerate() {
                                         let out_str = out.to_string();
@@ -4782,7 +5154,7 @@ fn get_short_addr(full_addr: &str) -> String {
     format!("los_{}", &full_addr[3..11])
 }
 
-/// SECURITY FIX #11: Format CIL balance as precise LOS string
+/// Format CIL balance as precise LOS string
 /// Prevents integer division hiding sub-LOS amounts (e.g., 0.5 LOS → "0" with integer division)
 fn format_balance_precise(cil_amount: u128) -> String {
     format!(
@@ -4794,7 +5166,7 @@ fn format_balance_precise(cil_amount: u128) -> String {
 
 /// MAINNET DETERMINISTIC: Convert burn amount + price to CIL using pure u128 integer math.
 /// NO f64 anywhere — inputs are already in integer base units.
-/// FIX C11-C2: Returns Result to prevent silent fund loss on overflow.
+/// Returns Result to prevent silent fund loss on overflow.
 ///
 /// # Arguments
 /// * `amt_base` — Amount in base units: wei (10^18 per ETH) or satoshi (10^8 per BTC)
@@ -5140,7 +5512,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 "--mine-threads" => {
                     if let Some(v) = args.get(i + 1) {
-                        mining_threads = v.parse().unwrap_or(1).max(1).min(16);
+                        mining_threads = v.parse().unwrap_or(1).clamp(1, 16);
                         i += 1;
                     }
                 }
@@ -5454,7 +5826,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("🧅 Mainnet Tor enforcement: PASSED");
     }
 
-    // FIX: Load ledger and genesis BEFORE wrapping in Arc to prevent race condition
+    // Load ledger and genesis BEFORE wrapping in Arc to prevent race condition
     let mut ledger_state = load_from_disk(&database);
 
     // Collect genesis validator → onion_address mappings during genesis loading.
@@ -5500,7 +5872,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Mainnet: use validated GenesisConfig parser
                 // Testnet: use the raw JSON wallets parser (legacy format)
                 if los_core::is_mainnet_build() {
-                    // SECURITY FIX: Validate genesis config BEFORE loading accounts.
+                    // Validate genesis config BEFORE loading accounts.
                     // Prevents tampered genesis files from silently loading invalid state.
                     {
                         let genesis_config: genesis::GenesisConfig =
@@ -5525,8 +5897,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 bootstrap_validators.push(node.address.clone());
                                 // Collect host_address (or onion_address fallback) for endpoint discovery
                                 if let Some(host) = resolve_genesis_host(node) {
-                                    genesis_onion_map
-                                        .push((node.address.clone(), host));
+                                    genesis_onion_map.push((node.address.clone(), host));
                                 }
                             }
                             println!(
@@ -5582,7 +5953,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let mut genesis_supply_deducted: u128 = 0;
 
                             for wallet in wallets {
-                                // FIX C1: Support both "balance_los" and "genesis_balance_los" field names
+                                // Support both "balance_los" and "genesis_balance_los" field names
                                 // testnet_wallets.json uses "genesis_balance_los", mainnet uses "balance_los"
                                 let balance_str_opt = wallet["balance_los"]
                                     .as_str()
@@ -5590,7 +5961,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 if let (Some(address), Some(balance_str)) =
                                     (wallet["address"].as_str(), balance_str_opt)
                                 {
-                                    // FIX C11-C02: Validate testnet genesis wallet entries
+                                    // Validate testnet genesis wallet entries
                                     if !address.starts_with("LOS") || address.len() < 10 {
                                         eprintln!("⚠️ Testnet genesis: skipping invalid address format: {}", address);
                                         continue;
@@ -5621,7 +5992,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         let host = wallet["host_address"]
                                             .as_str()
                                             .filter(|s| !s.is_empty())
-                                            .or_else(|| wallet["onion_address"].as_str().filter(|s| !s.is_empty()));
+                                            .or_else(|| {
+                                                wallet["onion_address"]
+                                                    .as_str()
+                                                    .filter(|s| !s.is_empty())
+                                            });
                                         if let Some(h) = host {
                                             genesis_onion_map
                                                 .push((address.to_string(), h.to_string()));
@@ -5644,7 +6019,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
 
                             if loaded_count > 0 {
-                                // FIX C11-L14: Validate aggregate balance doesn't exceed total supply
+                                // Validate aggregate balance doesn't exceed total supply
                                 let max_supply_cil = 21_936_236u128 * CIL_PER_LOS;
                                 if genesis_supply_deducted > max_supply_cil {
                                     eprintln!("❌ FATAL: Testnet genesis aggregate balance ({} CIL) exceeds total supply ({} CIL)",
@@ -5671,6 +6046,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
+        }
+    }
+
+    // VALIDATOR IDENTITY CHECK: Verify if this node's address is a genesis bootstrap validator.
+    // With LOS_SEED_PHRASE, the keypair is deterministic and matches genesis config.
+    // No state mutation here — genesis loading already set is_validator + balance.
+    if testnet_config::get_testnet_config().should_enable_consensus() {
+        let is_genesis_validator = ledger_state
+            .accounts
+            .get(&my_address)
+            .map(|a| a.is_validator && a.balance >= MIN_VALIDATOR_REGISTER_CIL)
+            .unwrap_or(false);
+        if is_genesis_validator {
+            println!(
+                "\u{2705} Node address {} matches genesis bootstrap validator (stake: {} LOS)",
+                get_short_addr(&my_address),
+                ledger_state
+                    .accounts
+                    .get(&my_address)
+                    .map(|a| a.balance / CIL_PER_LOS)
+                    .unwrap_or(0)
+            );
+        } else {
+            println!("\u{2139}\u{fe0f}  Node address {} is NOT a genesis validator. Register via API with \u{2265}1 LOS stake.",
+                get_short_addr(&my_address));
         }
     }
 
@@ -5774,7 +6174,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let address_book = Arc::new(Mutex::new(initial_peers));
 
-    // SECURITY FIX: live_peers tracks validators that PROVED liveness via gossipsub.
+    // live_peers tracks validators that PROVED liveness via gossipsub.
     // Key = full address, Value = Unix timestamp of last received gossipsub message.
     // Only peers in this map with recent timestamps receive heartbeats for rewards.
     // This prevents dead validators from earning rewards via stale address_book entries.
@@ -5799,18 +6199,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Runs alongside pending_sends (shadow mode) to provide stats and future block assembly.
     let mempool_pool = Arc::new(Mutex::new(mempool::Mempool::new()));
 
-    // SECURITY FIX: Vote deduplication — track which validators have already voted
+    // Vote deduplication — track which validators have already voted
     // Prevents a single validator from reaching consensus alone by sending multiple votes
     let burn_voters = Arc::new(Mutex::new(HashMap::<String, HashSet<String>>::new()));
     let send_voters = Arc::new(Mutex::new(HashMap::<String, HashSet<String>>::new()));
 
-    // DESIGN FIX D-3: Pending checkpoints accumulating multi-validator signatures.
+    // DESIGN Pending checkpoints accumulating multi-validator signatures.
     // Keyed by checkpoint height → PendingCheckpoint with accumulated signatures.
     // Once 2f+1 sigs collected, finalized via CheckpointManager::store_checkpoint().
     let pending_checkpoints: Arc<Mutex<HashMap<u64, PendingCheckpoint>>> =
         Arc::new(Mutex::new(HashMap::new()));
 
-    // DESIGN FIX D-3: Outbox for checkpoint gossip messages.
+    // DESIGN Outbox for checkpoint gossip messages.
     // The save task pushes CHECKPOINT_PROPOSE messages here; a gossip consumer drains them.
     let checkpoint_outbox: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
 
@@ -5843,7 +6243,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     let validator_endpoints = Arc::new(Mutex::new(initial_endpoints));
-
 
     // PoW MINT ENGINE — Fair token distribution via SHA3 proof-of-work
     // miners compute SHA3-256(address || epoch || nonce) and submit proofs.
@@ -5891,7 +6290,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // NEW: Finality Checkpoint Manager (prevents long-range attacks)
-    // CRITICAL FIX: Use --data-dir path, NOT hardcoded node_data/{node_id}/.
+    // Use --data-dir path, NOT hardcoded node_data/{node_id}/.
     // The old path was shared across all flutter-validator instances regardless
     // of --data-dir, causing lock conflicts from zombie (UE) processes.
     let checkpoint_db_path = format!("{}/checkpoints", base_data_dir);
@@ -5935,7 +6334,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut l = safe_lock(&ledger);
         if !l.accounts.contains_key(&my_address) {
             if !testnet_config::get_testnet_config().should_enable_consensus() {
-                // SECURITY FIX #7: Create proper Mint block for testnet initial balance
+                // Create proper Mint block for testnet initial balance
                 // This deducts from distribution.remaining_supply (no free money)
                 l.accounts.insert(
                     my_address.clone(),
@@ -6009,15 +6408,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // FIX: Background task for debounced disk saves (prevents race conditions)
-    // SECURITY FIX #15: Clone ledger snapshot THEN release lock BEFORE disk I/O
+    // Background task for debounced disk saves (prevents race conditions)
+    // Clone ledger snapshot THEN release lock BEFORE disk I/O
     let save_ledger = Arc::clone(&ledger);
     let save_database = Arc::clone(&database);
     let save_checkpoint_mgr = Arc::clone(&checkpoint_manager);
-    // SECURITY FIX C-14: Clone signing credentials for checkpoint signatures
+    // Clone signing credentials for checkpoint signatures
     let save_secret_key = secret_key.clone();
     let save_my_address = my_address.clone();
-    // DESIGN FIX D-3: Clone pending checkpoints for multi-validator coordination
+    // DESIGN Clone pending checkpoints for multi-validator coordination
     let save_pending_checkpoints = Arc::clone(&pending_checkpoints);
     let save_checkpoint_outbox = Arc::clone(&checkpoint_outbox);
     tokio::spawn(async move {
@@ -6041,7 +6440,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 save_to_disk_internal(&ledger_snapshot, &save_database, false);
 
                 // CHECKPOINT: Create finality checkpoint when block_count crosses next interval
-                // FIX: Use >= instead of == to handle block-lattice where exact multiples may be skipped
+                // Use >= instead of == to handle block-lattice where exact multiples may be skipped
                 if block_count > 0 {
                     let mut cm = safe_lock(&save_checkpoint_mgr);
                     let latest_height = cm
@@ -6054,7 +6453,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         ((latest_height / CHECKPOINT_INTERVAL) + 1) * CHECKPOINT_INTERVAL;
 
                     if block_count >= next_checkpoint {
-                        // FIX P0-3: Snap block_count DOWN to aligned interval.
+                        // Snap block_count DOWN to aligned interval.
                         // In a block-lattice, block_count rarely lands exactly on a
                         // multiple of CHECKPOINT_INTERVAL. Without snapping, every
                         // checkpoint was silently rejected by is_valid_interval().
@@ -6062,7 +6461,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             (block_count / CHECKPOINT_INTERVAL) * CHECKPOINT_INTERVAL;
 
                         // Calculate simple state root from account balances
-                        // DESIGN FIX D-7: Use Ledger::compute_state_root() for consistency
+                        // DESIGN Use Ledger::compute_state_root() for consistency
                         let state_root = ledger_snapshot.compute_state_root();
 
                         // Find latest block hash
@@ -6073,8 +6472,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .map(|b| b.calculate_hash())
                             .unwrap_or_else(|| "genesis".to_string());
 
-                        // SECURITY FIX C-14: Sign checkpoint data with this node's key.
-                        // DESIGN FIX D-3: Create checkpoint proposal with our signature,
+                        // Sign checkpoint data with this node's key.
+                        // DESIGN Create checkpoint proposal with our signature,
                         // store in pending_checkpoints map. The gossip broadcast task
                         // will handle broadcasting CHECKPOINT_PROPOSE to peers for
                         // multi-validator signature collection.
@@ -6086,7 +6485,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             vec![], // placeholder — filled below
                         );
                         let signing_data = checkpoint.signing_data();
-                        let my_sig = match los_crypto::sign_message(&signing_data, &save_secret_key) {
+                        let my_sig = match los_crypto::sign_message(&signing_data, &save_secret_key)
+                        {
                             Ok(sig) => sig,
                             Err(e) => {
                                 eprintln!("⚠️ Checkpoint signing failed: {} — skipping", e);
@@ -6104,7 +6504,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }],
                         );
 
-                        // DESIGN FIX D-3: Store as pending checkpoint, awaiting peer signatures.
+                        // DESIGN Store as pending checkpoint, awaiting peer signatures.
                         // For single-validator networks, this will immediately pass quorum (1/1).
                         // For multi-validator: gossip task will broadcast CHECKPOINT_PROPOSE.
                         let pending_cp = PendingCheckpoint::new(checkpoint.clone());
@@ -6141,7 +6541,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // FIX V4#15: Periodic cleanup of stale pending transactions
+    // Periodic cleanup of stale pending transactions
     // Pending sends/burns older than 5 minutes are removed to prevent memory leaks
     let cleanup_pending_sends = Arc::clone(&pending_sends);
     let cleanup_pending_burns = Arc::clone(&pending_burns);
@@ -6186,7 +6586,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // DESIGN FIX D-4: Periodic supply invariant audit (every 5 minutes).
+    // DESIGN Periodic supply invariant audit (every 5 minutes).
     // Verifies that total_supply == sum(balances) + remaining + slashed + fees + reward_pool.
     // Logs a CRITICAL warning if the invariant breaks (indicates a bug).
     let audit_ledger = Arc::clone(&ledger);
@@ -6294,7 +6694,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // DESIGN FIX D-3: Checkpoint gossip outbox drainer.
+    // DESIGN Checkpoint gossip outbox drainer.
     // Periodically checks for pending CHECKPOINT_PROPOSE messages and sends them via gossip.
     let cp_outbox_tx = tx_out.clone();
     let cp_outbox_drain = Arc::clone(&checkpoint_outbox);
@@ -6361,6 +6761,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(e) => eprintln!("⚠️ Failed to load contracts from DB: {}", e),
     }
     let api_wasm_engine = Arc::clone(&wasm_engine);
+    let api_mining_state = Arc::clone(&mining_state);
 
     tokio::spawn(async move {
         start_api_server(ApiServerConfig {
@@ -6384,7 +6785,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             abft_consensus: api_abft,
             local_registered_validators: api_local_validators,
             wasm_engine: api_wasm_engine,
-            mining_state: mining_state.clone(),
+            mining_state: api_mining_state,
             enable_mining,
             mining_threads,
         })
@@ -6399,6 +6800,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let grpc_ab = Arc::clone(&address_book);
     let grpc_bv = bootstrap_validators.clone();
     let grpc_rest_port = api_port;
+    let grpc_reward_pool = Arc::clone(&reward_pool);
 
     tokio::spawn(async move {
         println!("🔧 Starting gRPC server on port {}...", grpc_port);
@@ -6415,6 +6817,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             grpc_ab,
             grpc_bv,
             grpc_rest_port,
+            grpc_reward_pool,
         )
         .await
         {
@@ -6423,7 +6826,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // (Oracle price broadcaster removed — prices fetched on-demand)
-
 
     // ══════════════════════════════════════════════════════════════════════
     // VALIDATOR REWARD SYSTEM — Heartbeat recording + Epoch distribution
@@ -6657,7 +7059,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         // Not epoch boundary — nothing to do
                         (Vec::new(), false, 0u64, None)
                     } else {
-                        // DETERMINISTIC LEADER ELECTION (CONSENSUS FIX)
+                        // DETERMINISTIC LEADER ELECTION
                         // Previously used volatile HTTP heartbeat data (reward_live_peers)
                         // which differs per node on Tor → ALL nodes thought they were leader
                         // → conflicting reward blocks → chain divergence → blacklisting.
@@ -6698,7 +7100,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                         pool.set_expected_heartbeats(heartbeat_secs);
 
-                        // CONSENSUS FIX: Only the leader distributes rewards.
+                        // Only the leader distributes rewards.
                         // Non-leaders just advance the epoch (reset heartbeats, increment counter)
                         // without deducting from the pool. They will receive the leader's
                         // reward blocks via gossip/sync and process them normally through
@@ -7400,10 +7802,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             #[cfg(unix)]
             {
                 use tokio::signal::unix::{signal, SignalKind};
-                let mut sigterm =
-                    signal(SignalKind::terminate()).expect("Failed to install SIGTERM handler");
-                let mut sigint =
-                    signal(SignalKind::interrupt()).expect("Failed to install SIGINT handler");
+                let mut sigterm = match signal(SignalKind::terminate()) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!("❌ Fatal: cannot install SIGTERM handler: {e}. Aborting.");
+                        std::process::exit(1);
+                    }
+                };
+                let mut sigint = match signal(SignalKind::interrupt()) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!("❌ Fatal: cannot install SIGINT handler: {e}. Aborting.");
+                        std::process::exit(1);
+                    }
+                };
 
                 tokio::select! {
                     _ = sigterm.recv() => do_shutdown("SIGTERM"),
@@ -7516,7 +7928,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             // 1. SANITIZE TXID (Important: 0xABC == abc)
                             let clean_txid = raw_txid.trim().trim_start_matches("0x").to_lowercase();
 
-                            // SECURITY FIX: Validate TXID format
+                            // Validate TXID format
                             if clean_txid.is_empty() || clean_txid.len() > 128 || !clean_txid.chars().all(|c| c.is_ascii_hexdigit()) {
                                 println!("❌ Invalid TXID format: must be a non-empty hex string (max 128 chars)");
                                 continue;
@@ -7524,7 +7936,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                             let link_to_search = format!("{}:{}", coin_type.to_uppercase(), clean_txid);
 
-                            // 2. DEADLOCK FIX #4c: Check Ledger and Pending separately (never hold both)
+                            // 2. DEADLOCK Check Ledger and Pending separately (never hold both)
                             let is_already_minted = {
                                 let l = safe_lock(&ledger);
                                 l.blocks.values().any(|b| {
@@ -7532,7 +7944,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     (b.link == link_to_search || b.link.contains(&clean_txid))
                                 })
                             }; // L dropped
-                            // SECURITY FIX C-13: Atomic check-and-insert for burn race condition.
+                            // Atomic check-and-insert for burn race condition.
                             // Previously, is_pending check and insert were separate lock scopes,
                             // allowing two concurrent burn requests for the same TXID to both
                             // pass the check and insert, causing double-mint.
@@ -7579,7 +7991,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                 println!("✅ Valid TXID: {} {} (base units) detected.", amt, sym);
 
-                                // CONSENSUS FIX: Start burn power at 0 — sender doesn't self-vote.
+                                // Start burn power at 0 — sender doesn't self-vote.
                                 // Only distinct external validators contribute voting power via VOTE_RES.
                                 let my_power: u128 = 0;
 
@@ -7615,7 +8027,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let target_full = safe_lock(&address_book).get(target_short).cloned();
 
                             if let Some(d) = target_full {
-                                // DEADLOCK FIX #4e: Never hold L and PS simultaneously.
+                                // DEADLOCK Never hold L and PS simultaneously.
                                 // Step 1: Get state from Ledger (L lock only)
                                 let state = {
                                     let l = safe_lock(&ledger);
@@ -7625,7 +8037,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }; // L dropped
 
                                 // Step 2: Check pending total (PS lock only)
-                                // FIX C11-M1: Only sum THIS sender's pending txs, not all
+                                // Only sum THIS sender's pending txs, not all
                                 let pending_total: u128 = safe_lock(&pending_sends).values()
                                     .filter(|(b, _)| b.account == my_address)
                                     .map(|(b, _)| b.amount).sum();
@@ -7664,7 +8076,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                 // Broadcast confirmation request (REQ) to network
                                 let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
-                                // CONSENSUS FIX: Include block data (base64) so peers can validate
+                                // Include block data (base64) so peers can validate
                                 let block_json = serde_json::to_string(&blk).unwrap_or_default();
                                 let block_b64 = base64::engine::general_purpose::STANDARD.encode(block_json.as_bytes());
                                 let req_msg = format!("CONFIRM_REQ:{}:{}:{}:{}:{}", hash, my_address, amt, ts, block_b64);
@@ -7711,7 +8123,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                 if full != my_address {
                                     let short = get_short_addr(&full);
-                                    // FIX C12-09: Cap address_book to prevent memory DoS from
+                                    // Cap address_book to prevent memory DoS from
                                     // malicious peers flooding fake ID: messages.
                                     const MAX_PEERS: usize = 10_000;
                                     let is_new = {
@@ -7745,12 +8157,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         }
                                     }
 
-                                    // DEADLOCK FIX #4f: Never hold L and PS simultaneously.
+                                    // DEADLOCK Never hold L and PS simultaneously.
                                     // Step 1: Ledger operations (L lock only)
                                     let (supply_data, full_state_json) = {
                                         let mut l = safe_lock(&ledger);
 
-                                        // SECURITY FIX #2: Don't blindly trust peer's remaining_supply.
+                                        // Don't blindly trust peer's remaining_supply.
                                         // Instead, verify by recalculating from our own Mint blocks.
                                         // Only sync if peer claims LESS supply remaining AND our calculation confirms it.
                                         if rem_s < l.distribution.remaining_supply && rem_s != 0 {
@@ -7788,7 +8200,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         let pending_map = safe_lock(&pending_sends);
                                         pending_map.iter().map(|(hash, (blk, _))| {
                                             let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
-                                            // CONSENSUS FIX: Include block data (base64) in retry too
+                                            // Include block data (base64) in retry too
                                             let block_json = serde_json::to_string(blk).unwrap_or_default();
                                             let block_b64 = base64::engine::general_purpose::STANDARD.encode(block_json.as_bytes());
                                             (format!("CONFIRM_REQ:{}:{}:{}:{}:{}", hash, blk.account, blk.amount, ts, block_b64), hash[..8].to_string())
@@ -7832,7 +8244,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             }
                         } else if let Some(encoded_data) = data.strip_prefix("SYNC_GZIP:") {
-                            // V4#17: Rate limit SYNC_GZIP to prevent DDoS via large payloads
+                            // Rate limit SYNC_GZIP to prevent DDoS via large payloads
                             static LAST_SYNC: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
                             let now_secs = std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
@@ -7847,7 +8259,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 use flate2::read::GzDecoder;
                                 use std::io::Read;
 
-                                // SECURITY FIX NEW#4: Limit decompressed size to prevent decompression bomb
+                                // Limit decompressed size to prevent decompression bomb
                                 const MAX_DECOMPRESSED_SIZE: u64 = 50 * 1024 * 1024; // 50 MB max
                                 let decoder = GzDecoder::new(&compressed_bytes[..]);
                                 let mut limited_decoder = decoder.take(MAX_DECOMPRESSED_SIZE);
@@ -7855,7 +8267,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                 if limited_decoder.read_to_string(&mut decompressed_json).is_ok() {
                                     if let Ok(incoming_ledger) = serde_json::from_str::<Ledger>(&decompressed_json) {
-                                        // DESIGN FIX D-7: State root comparison — skip sync if states match.
+                                        // DESIGN State root comparison — skip sync if states match.
                                         // Prevents redundant O(n) block-by-block processing when two nodes
                                         // already have identical state (common after initial sync).
                                         let incoming_root = incoming_ledger.compute_state_root();
@@ -7873,7 +8285,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         let mut added_count = 0;
                                         let mut invalid_count = 0;
 
-                                        // FIX C12-05: Remove 1000-block cap to allow full state sync.
+                                        // Remove 1000-block cap to allow full state sync.
                                         // Sort blocks by timestamp for O(n log n) sync instead of O(n²)
                                         let mut incoming_blocks: Vec<Block> = incoming_ledger.blocks.values()
                                             .cloned()
@@ -7883,7 +8295,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         // Two-pass: first pass processes ordered blocks, second catches stragglers
                                         for pass in 0..2 {
                                             for blk in &incoming_blocks {
-                                                // FIX C12-01b: Accept Mint/Slash blocks in SYNC if validly signed
+                                                // Accept Mint/Slash blocks in SYNC if validly signed
                                                 // by a staked validator. Blanket-reject caused new nodes to
                                                 // permanently miss all minted balances.
                                                 if matches!(blk.block_type, BlockType::Mint | BlockType::Slash) {
@@ -7908,7 +8320,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     });
                                                 }
 
-                                                // SECURITY FIX C-11: Save supply before process_block() for FEE_REWARD blocks.
+                                                // Save supply before process_block() for FEE_REWARD blocks.
                                                 // Fee rewards are redistribution of collected fees, NOT new minting.
                                                 // process_block() decrements remaining_supply for all Mint blocks,
                                                 // but fee rewards should not — they come from accumulated_fees_cil.
@@ -7923,11 +8335,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                                 match l.process_block(blk) {
                                                     Ok(_) => {
-                                                        // SECURITY FIX C-11: Restore supply for fee rewards
+                                                        // Restore supply for fee rewards
                                                         if let Some(saved_supply) = supply_before_fee {
                                                             l.distribution.remaining_supply = saved_supply;
                                                         }
-                                                        // CONSENSUS FIX: Sync reward pool when receiving
+                                                        // Sync reward pool when receiving
                                                         // REWARD:EPOCH or FEE_REWARD:EPOCH Mint blocks from leader.
                                                         // This keeps non-leader pool stats consistent.
                                                         if blk.block_type == BlockType::Mint
@@ -8013,7 +8425,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     println!("📡 Sync request from {} (they have {} blocks, we have {})",
                                         get_short_addr(&requester), their_count, our_count);
 
-                                    // FIX M-NEW-01: Comment was misleading — this sends the full
+                                    // Comment was misleading — this sends the full
                                     // ledger state. True delta-sync is a future protocol upgrade.
                                     // Rate limiting (1 per 15s per peer, 8MB cap) mitigates DoS.
                                     let sync_json = {
@@ -8041,7 +8453,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         } else if data.starts_with("VOTE_REQ:") {
                             // FORMAT: VOTE_REQ:coin_type:txid:requester_address:timestamp
-                            // SECURITY FIX M-NEW-03: Limit concurrent VOTE_REQ tasks via semaphore.
+                            // Limit concurrent VOTE_REQ tasks via semaphore.
                             // Without this, an attacker flooding VOTE_REQ messages creates unbounded
                             // tokio tasks (each making HTTP price API calls), exhausting memory/FDs → DoS.
                             static VOTE_SEMAPHORE: std::sync::LazyLock<Arc<tokio::sync::Semaphore>> =
@@ -8055,7 +8467,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let tx_vote = tx_out.clone();
                                 let ledger_ref = Arc::clone(&ledger);
                                 let my_addr_clone = my_address.clone();
-                                // FIX C12-03: Wrap cloned secret key in Zeroizing for automatic
+                                // Wrap cloned secret key in Zeroizing for automatic
                                 // zeroing when the async task completes (prevents key leakage in heap)
                                 let vote_sk = secret_key.clone();
                                 let vote_pk = keys.public_key.clone();
@@ -8078,7 +8490,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         // IF DOUBLE CLAIM DETECTED FROM OTHER PEER
                                         if requester != my_addr_clone {
                                             println!("🚨 DOUBLE CLAIM DETECTED: {} trying to claim existing TXID!", get_short_addr(&requester));
-                                            // SECURITY FIX S1: Sign SLASH_REQ with Dilithium5
+                                            // Sign SLASH_REQ with Dilithium5
                                             let slash_ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
                                             let slash_payload = format!("SLASH:{}:{}:{}:{}", requester, txid, my_addr_clone, slash_ts);
                                             if let Ok(slash_sig) = los_crypto::sign_message(slash_payload.as_bytes(), &vote_sk) {
@@ -8140,7 +8552,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         } else if data.starts_with("SLASH_REQ:") {
                             // FORMAT: SLASH_REQ:cheater_address:fake_txid:proposer_addr:timestamp:signature:pubkey (7 parts)
-                            // SECURITY FIX S1: Verify Dilithium5 signature on SLASH_REQ (was unsigned).
+                            // Verify Dilithium5 signature on SLASH_REQ (was unsigned).
                             let parts: Vec<&str> = data.split(':').collect();
                             if parts.len() == 7 {
                                 let proposer_addr = parts[3].to_string();
@@ -8323,10 +8735,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     continue;
                                 }
 
-                                // CONSENSUS FIX: Removed `requester == my_address` guard (same fix as send consensus).
+                                // Removed `requester == my_address` guard (same fix as send consensus).
                                 // The txid_exists check already correctly identifies the originating node.
                                 {
-                                    // DEADLOCK FIX #4d: Never hold PB and L simultaneously.
+                                    // DEADLOCK Never hold PB and L simultaneously.
                                     // Step 1: Check if txid exists in pending (PB lock only)
                                     let txid_exists = {
                                         let pending = safe_lock(&pending_burns);
@@ -8338,12 +8750,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     // Step 2: Get voter balance (L lock only)
                                     let (voter_balance, active_vc) = {
                                         let l_guard = safe_lock(&ledger);
-                                        // SECURITY FIX #10: Use in-memory state (authoritative)
+                                        // Use in-memory state (authoritative)
                                         // REMOVED: disk re-read that overwrote in-memory state
                                         let bal = l_guard.accounts.get(&voter_addr)
                                             .map(|a| a.balance)
                                             .unwrap_or(0);
-                                        let vc = l_guard.accounts.values().filter(|a| a.balance >= MIN_VALIDATOR_STAKE_CIL).count();
+                                        // Only count accounts with is_validator=true.
+                                        // Treasury wallets inflate vc, making quorum impossible.
+                                        let vc = l_guard.accounts.values().filter(|a| a.is_validator && a.balance >= MIN_VALIDATOR_STAKE_CIL).count();
                                         (bal, vc)
                                     }; // L dropped
 
@@ -8361,7 +8775,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                     // Step 3: Update votes and check threshold (PB lock only)
                                     let consensus_data = {
-                                        // SECURITY FIX: Vote deduplication — prevent single validator from reaching consensus alone
+                                        // Vote deduplication — prevent single validator from reaching consensus alone
                                         let mut voters = safe_lock(&burn_voters_clone);
                                         let voter_set = voters.entry(txid.clone()).or_default();
                                         if voter_set.contains(&voter_addr) {
@@ -8374,16 +8788,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                         let mut pending = safe_lock(&pending_burns);
                                         if let Some(burn_info) = pending.get_mut(&txid) {
-                                            // SECURITY FIX S4: Pure u128 integer math — no f64 truncation
-                                            let power_scaled = voter_power_linear * 1000;
+                                            // Normalize CIL→LOS before * 1000 scaling.
+                                            // calculate_voting_power() returns raw CIL (e.g. 10^14 for 1000 LOS stake).
+                                            // Threshold is in LOS-scaled units (20,000 = 20 LOS × 1000).
+                                            // Without normalization, a single minimum-stake vote produces 10^17,
+                                            // trivially exceeding the threshold and making it a dead check.
+                                            let voter_power_los = voter_power_linear / CIL_PER_LOS;
+                                            let power_scaled = voter_power_los * 1000;
                                             burn_info.3 += power_scaled;
 
                                             let min_voters = if !testnet_config::get_testnet_config().should_enable_consensus() { 1 } else { min_distinct_voters(active_vc) };
-                                            println!("📩 Vote Received: {} (Stake: {} LOS, Power: {}) | Progress: {}/20000 (Voters: {}/{})",
+                                            println!("📩 Vote Received: {} (Stake: {} LOS, Power: {}) | Progress: {}/{} (Voters: {}/{})",
                                                 get_short_addr(&voter_addr),
                                                 voter_power_display,
-                                                voter_power_linear,
+                                                voter_power_los,
                                                 burn_info.3,
+                                                BURN_CONSENSUS_THRESHOLD,
                                                 distinct_count,
                                                 min_voters
                                             );
@@ -8399,7 +8819,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                     // Step 4: If consensus reached, mint (L lock only)
                                     if let Some((amt_coin, price, sym, mint_recipient)) = consensus_data {
-                                        // SECURITY FIX NEW#3: Pure integer math via calculate_mint_cil()
+                                        // Pure integer math via calculate_mint_cil()
                                         let los_to_mint = match calculate_mint_cil(amt_coin, price, &sym) {
                                             Ok(v) => v,
                                             Err(e) => {
@@ -8469,7 +8889,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let sender_addr = parts[2].to_string();
                                 let amount = parts[3].parse::<u128>().unwrap_or(0);
 
-                                // CONSENSUS FIX: Decode block from CONFIRM_REQ message (V2 format)
+                                // Decode block from CONFIRM_REQ message (V2 format)
                                 // so peers can validate without needing the block in their ledger.
                                 let block_from_msg: Option<los_core::Block> = if parts.len() >= 6 {
                                     base64::engine::general_purpose::STANDARD.decode(parts[5]).ok()
@@ -8481,7 +8901,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 let tx_confirm = tx_out.clone();
                                 let ledger_ref = Arc::clone(&ledger);
                                 let my_addr_clone = my_address.clone();
-                                // FIX C12-03: Zeroize cloned secret key on async task drop
+                                // Zeroize cloned secret key on async task drop
                                 let confirm_sk = secret_key.clone();
                                 let confirm_pk = keys.public_key.clone();
 
@@ -8535,9 +8955,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                     if !block_valid {
                                         // P0-2: Block doesn't exist/match and no valid embedded block — don't vote
+                                        println!("⚠️ CONFIRM_REQ rejected: block_valid=false for hash={}", &tx_hash[..8.min(tx_hash.len())]);
                                         return;
                                     }
 
+                                    // BALANCE CHECK: Verify sender has sufficient funds before voting YES.
+                                    // This is the mainnet-safe path — no shortcuts.
                                     if sender_balance >= amount {
                                         let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
                                         // SECURITY P0-1: Sign CONFIRM_RES with Dilithium5
@@ -8546,8 +8969,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             let res = format!("CONFIRM_RES:{}:{}:YES:{}:{}:{}:{}", tx_hash, sender_addr, my_addr_clone, ts, hex::encode(&sig), hex::encode(&confirm_pk));
                                             let _ = tx_confirm.send(res).await;
                                         } else {
-                                            eprintln!("⚠️ Signing failed for CONFIRM_RES — skipping");
+                                            eprintln!("\u{26a0}\u{fe0f} Signing failed for CONFIRM_RES \u{2014} skipping");
                                         }
+                                    } else {
+                                        println!("\u{26a0}\u{fe0f} CONFIRM_REQ rejected: sender {} has insufficient balance ({} CIL < {} CIL)",
+                                            get_short_addr(&sender_addr), sender_balance, amount);
                                     }
                                 });
                             }
@@ -8576,12 +9002,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     continue;
                                 }
 
-                                // CONSENSUS FIX: Removed `requester == my_address` guard.
+                                // Removed `requester == my_address` guard.
                                 // When a user wallet sends through a node, requester = wallet address ≠ node address,
                                 // causing ALL votes to be silently dropped. The tx_exists check in pending_sends
                                 // already correctly identifies the originating node (only the originator has it).
                                 {
-                                    // DEADLOCK FIX #4g: Never hold PS and L simultaneously.
+                                    // DEADLOCK Never hold PS and L simultaneously.
                                     // Step 1: Check if tx exists in pending (PS lock only)
                                     let tx_exists = {
                                         let pending = safe_lock(&pending_sends);
@@ -8593,10 +9019,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     // Step 2: Get voter balance (L lock only)
                                     let (voter_balance, active_vc) = {
                                         let l_guard = safe_lock(&ledger);
-                                        // SECURITY FIX #10: Use in-memory state (authoritative)
+                                        // Use in-memory state (authoritative)
                                         // REMOVED: disk re-read that overwrote in-memory state
                                         let bal = l_guard.accounts.get(&voter_addr).map(|a| a.balance).unwrap_or(0);
-                                        let vc = l_guard.accounts.values().filter(|a| a.balance >= MIN_VALIDATOR_STAKE_CIL).count();
+                                        // Only count accounts with is_validator=true.
+                                        // Treasury wallets inflate vc, making quorum impossible.
+                                        let vc = l_guard.accounts.values().filter(|a| a.is_validator && a.balance >= MIN_VALIDATOR_STAKE_CIL).count();
                                         (bal, vc)
                                     }; // L dropped
 
@@ -8606,7 +9034,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                     // Step 3: Update votes and check threshold (PS lock only)
                                     let finalize_data = {
-                                        // SECURITY FIX: Vote deduplication — prevent single validator from reaching consensus alone
+                                        // Vote deduplication — prevent single validator from reaching consensus alone
                                         let mut voters = safe_lock(&send_voters_clone);
                                         let voter_set = voters.entry(tx_hash.clone()).or_default();
                                         if voter_set.contains(&voter_addr) {
@@ -8620,12 +9048,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         let mut pending = safe_lock(&pending_sends);
                                         if let Some((blk, total_power_votes)) = pending.get_mut(&tx_hash) {
                                             if voter_power_linear > 0 {
-                                                // SECURITY FIX S4: Pure u128 integer math — no f64 truncation
-                                                let power_scaled = voter_power_linear * 1000;
+                                                // Normalize CIL→LOS before * 1000 scaling (matches SEND_CONSENSUS_THRESHOLD units).
+                                                let voter_power_los = voter_power_linear / CIL_PER_LOS;
+                                                let power_scaled = voter_power_los * 1000;
                                                 *total_power_votes += power_scaled;
                                                 let min_voters = if !testnet_config::get_testnet_config().should_enable_consensus() { 1 } else { min_distinct_voters(active_vc) };
                                                 println!("📩 Konfirmasi Power: {} (Stake: {} LOS, Power: {}) | Total: {}/{} (Voters: {}/{})",
-                                                    get_short_addr(&voter_addr), voter_power_display, voter_power_linear, total_power_votes, SEND_CONSENSUS_THRESHOLD, distinct_count, min_voters
+                                                    get_short_addr(&voter_addr), voter_power_display, voter_power_los, total_power_votes, SEND_CONSENSUS_THRESHOLD, distinct_count, min_voters
                                                 );
                                             } else {
                                                 println!("⚠️ Vote from {} has 0 power (balance: {} CIL, {} LOS) — check genesis sync",
@@ -8674,7 +9103,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         }; // L dropped
 
                                         if process_success {
-                                            // DESIGN FIX D-1: Wire aBFT stats to actual consensus.
+                                            // DESIGN Wire aBFT stats to actual consensus.
                                             // Record this finalization so `/consensus` API reports
                                             // real blocks_finalized count instead of zero.
                                             {
@@ -8689,22 +9118,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             println!("✅ Transaction Confirmed (Power Verified) & Added to Ledger");
 
                                             // AUTO-UNREGISTER: If sender's balance dropped below minimum
-                                            // stake after this send, automatically unregister them.
+                                            // registration stake (1 LOS) after this send, automatically unregister them.
                                             if blk_to_finalize.block_type == BlockType::Send {
                                                 let mut l = safe_lock(&ledger);
                                                 if let Some(sender_acct) = l.accounts.get_mut(&blk_to_finalize.account) {
-                                                    if sender_acct.is_validator && sender_acct.balance < MIN_VALIDATOR_STAKE_CIL {
+                                                    if sender_acct.is_validator && sender_acct.balance < MIN_VALIDATOR_REGISTER_CIL {
                                                         sender_acct.is_validator = false;
                                                         SAVE_DIRTY.store(true, Ordering::Release);
-                                                        println!("⚠️ Auto-unregistered validator {}: balance {} < minimum stake {} LOS",
+                                                        println!("⚠️ Auto-unregistered validator {}: balance {} < minimum registration stake {} LOS",
                                                             get_short_addr(&blk_to_finalize.account),
                                                             sender_acct.balance / CIL_PER_LOS,
-                                                            MIN_VALIDATOR_STAKE_CIL / CIL_PER_LOS);
+                                                            MIN_VALIDATOR_REGISTER_CIL / CIL_PER_LOS);
                                                     }
                                                 }
                                             }
 
-                                            // CONSENSUS FIX: Auto-create Receive block for ANY recipient.
+                                            // Auto-create Receive block for ANY recipient.
                                             // The originating node that finalized the consensus must create
                                             // the Receive block — remote wallets (W1, W2, etc.) don't run
                                             // nodes, so no one else will create it.
@@ -8748,7 +9177,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                             // because the node's public_key doesn't match the target's account address.
                                                             let recv_hash = recv_blk.calculate_hash();
 
-                                                            // SECURITY FIX H-02: Explicit validations that process_block() would do.
+                                                            // Explicit validations that process_block() would do.
                                                             // 1. Duplicate block hash check
                                                             if l.blocks.contains_key(&recv_hash) {
                                                                 eprintln!("⚠️ Auto-Receive duplicate hash — skipping");
@@ -8889,7 +9318,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     let message = format!("VALIDATOR_HEARTBEAT_PROXY:{}:{}:{}", wallet_addr, node_addr, ts);
                                                     if los_crypto::verify_signature(message.as_bytes(), &sig_bytes, &pk_bytes) {
                                                         // Valid proxy heartbeat — node vouches for wallet.
-                                                        // SECURITY FIX H-01: Require BOTH the wallet AND the
+                                                        // Require BOTH the wallet AND the
                                                         // proxying node to be registered validators with stake.
                                                         // Without this, any anonymous node could spoof uptime
                                                         // for any validator, preventing deserved slashing.
@@ -8975,7 +9404,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         continue;
                                     }
 
-                                    if balance < MIN_VALIDATOR_STAKE_CIL {
+                                    if balance < MIN_VALIDATOR_REGISTER_CIL {
                                         println!("🚫 VALIDATOR_REG: {} has insufficient stake ({} LOS)",
                                             get_short_addr(&addr), balance / CIL_PER_LOS);
                                         continue;
@@ -9009,7 +9438,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         let mut validators: Vec<String> = l
                                             .accounts
                                             .iter()
-                                            .filter(|(_, a)| a.balance >= MIN_VALIDATOR_STAKE_CIL && a.is_validator)
+                                            .filter(|(_, a)| a.balance >= MIN_VALIDATOR_REGISTER_CIL && a.is_validator)
                                             .map(|(addr, _)| addr.clone())
                                             .collect();
                                         validators.sort();
@@ -9122,7 +9551,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         let mut validators: Vec<String> = l
                                             .accounts
                                             .iter()
-                                            .filter(|(_, a)| a.balance >= MIN_VALIDATOR_STAKE_CIL && a.is_validator)
+                                            .filter(|(_, a)| a.balance >= MIN_VALIDATOR_REGISTER_CIL && a.is_validator)
                                             .map(|(addr, _)| addr.clone())
                                             .collect();
                                         validators.sort();
@@ -9150,7 +9579,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             .filter(|s| !s.is_empty())
                                             .or_else(|| ep["onion_address"].as_str().filter(|s| !s.is_empty()))
                                             .unwrap_or_default();
-                                        // SECURITY FIX L-04: Only accept endpoints for registered
+                                        // Only accept endpoints for registered
                                         // validators. The map is named `validator_endpoints` and is
                                         // used by the `/validators` API. Accepting non-validators
                                         // would pollute validator listings and enable free uptime
@@ -9194,7 +9623,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         && send_blk.verify_signature()
                                         && send_blk.verify_pow();
                                     // Validate Receive block: signature + PoW + must be Receive type + amounts match + link matches Send hash
-                                    // SECURITY FIX C-09: Added recv_blk.verify_signature() — without this,
+                                    // Added recv_blk.verify_signature() — without this,
                                     // a malicious node could broadcast forged Receive blocks to credit
                                     // arbitrary accounts.
                                     let recv_valid = recv_blk.block_type == BlockType::Receive
@@ -9220,7 +9649,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     head: "0".to_string(), balance: 0, block_count: 0, is_validator: false,
                                                 });
                                             }
-                                            // SECURITY FIX M-10: Chain-sequence + balance validation
+                                            // Chain-sequence + balance validation
                                             // for BLOCK_CONFIRMED. Without these checks, a malicious
                                             // originator could broadcast conflicting BLOCK_CONFIRMED
                                             // messages (double-spend) — receiving nodes would apply
@@ -9228,7 +9657,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             let send_rejected = if let Some(sender) = l.accounts.get(&send_blk.account) {
                                                 let total_debit = send_blk.amount.saturating_add(send_blk.fee);
                                                 if sender.head != send_blk.previous {
-                                                    // DESIGN FIX D-6: Log fork event with diagnostic info.
+                                                    // DESIGN Log fork event with diagnostic info.
                                                     // With D-2 (all sends go through consensus), forks should
                                                     // be extremely rare. When they occur, it indicates either:
                                                     // 1. Network partition recovery (benign)
@@ -9285,13 +9714,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     head: "0".to_string(), balance: 0, block_count: 0, is_validator: false,
                                                 });
                                             }
-                                            // SECURITY FIX C-10: Validate Receive chain head.
+                                            // Validate Receive chain head.
                                             // Without this, a malicious originator could broadcast
                                             // conflicting BLOCK_CONFIRMED messages that overwrite
                                             // the recipient's chain head with stale references.
                                             let recv_rejected = if let Some(recv_acct) = l.accounts.get(&recv_blk.account) {
                                                 if recv_acct.head != recv_blk.previous {
-                                                    // DESIGN FIX D-6: Log recv fork with deterministic ordering info
+                                                    // DESIGN Log recv fork with deterministic ordering info
                                                     let existing_hash = &recv_acct.head;
                                                     let incoming_prev = &recv_blk.previous;
                                                     let canonical_winner = if incoming_prev < existing_hash { "incoming" } else { "existing" };
@@ -9323,7 +9752,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     recipient.block_count += 1;
                                                 }
                                                 l.blocks.insert(recv_hash, recv_blk.clone());
-                                                // SECURITY FIX M-4: Track claimed Send for double-receive prevention.
+                                                // Track claimed Send for double-receive prevention.
                                                 // BLOCK_CONFIRMED bypasses process_block(); without this insert,
                                                 // a subsequent Receive via process_block() could re-claim the
                                                 // same Send (claimed_sends check would return false).
@@ -9378,7 +9807,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     head: "0".to_string(), balance: 0, block_count: 0, is_validator: false,
                                                 });
                                             }
-                                            // SECURITY FIX M-10: Chain-sequence + balance validation
+                                            // Chain-sequence + balance validation
                                             // for CONTRACT_DEPLOYED — same pattern as BLOCK_CONFIRMED fix.
                                             let deploy_rejected = if let Some(deployer) = l.accounts.get(&deploy_blk.account) {
                                                 let total_debit = deploy_blk.amount.saturating_add(deploy_blk.fee);
@@ -9476,7 +9905,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     head: "0".to_string(), balance: 0, block_count: 0, is_validator: false,
                                                 });
                                             }
-                                            // SECURITY FIX M-10: Chain-sequence + balance validation
+                                            // Chain-sequence + balance validation
                                             // for CONTRACT_CALLED — same pattern as BLOCK_CONFIRMED fix.
                                             let call_rejected = if let Some(caller) = l.accounts.get(&call_blk.account) {
                                                 let total_debit = call_blk.amount.saturating_add(call_blk.fee);
@@ -9558,7 +9987,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                 }
                             }                        } else if let Some(rest) = data.strip_prefix("CHECKPOINT_PROPOSE:") {
-                            // ── DESIGN FIX D-3: Multi-validator checkpoint coordination ──
+                            // ── DESIGN Multi-validator checkpoint coordination ──
                             // Format: CHECKPOINT_PROPOSE:<height>:<block_hash>:<state_root>:<proposer>:<sig_hex>
                             // When we receive a checkpoint proposal, verify our state matches,
                             // sign the checkpoint data, and broadcast CHECKPOINT_SIGN back.
@@ -9632,7 +10061,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             }
                         } else if let Some(rest) = data.strip_prefix("CHECKPOINT_SIGN:") {
-                            // ── DESIGN FIX D-3: Collect checkpoint signatures from peers ──
+                            // ── DESIGN Collect checkpoint signatures from peers ──
                             // Format: CHECKPOINT_SIGN:<height>:<block_hash>:<state_root>:<signer>:<sig_hex>
                             let parts: Vec<&str> = rest.splitn(5, ':').collect();
                             if parts.len() == 5 {
@@ -9682,8 +10111,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         } else if let Some(rest) = data.strip_prefix("MINE_BLOCK:") {
                             // ── PoW MINT: Replicate a mined Mint block from another node ──
-                            // The block was already signed+PoW'd by the originating validator.
-                            // We verify signature, PoW, MINE: link format, then apply to ledger.
+                            // Full verification of mining PoW proof hash,
+                            // epoch validity, double-mining, and reward amount bounds.
+                            // Previously only checked signature + anti-spam PoW — a malicious
+                            // node could craft a MINE_BLOCK with a fake nonce/amount.
                             if let Ok(mint_blk) = serde_json::from_str::<Block>(rest) {
                                 // Must be a Mint block with MINE: link
                                 if mint_blk.block_type != BlockType::Mint || !mint_blk.link.starts_with("MINE:") {
@@ -9709,6 +10140,76 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     println!("🚫 Rejected MINE_BLOCK: invalid PoW");
                                     continue;
                                 }
+
+                                // ── SEC-MINE-01: Parse and verify mining PoW proof ──
+                                // Link format: "MINE:{epoch}:{nonce}"
+                                let link_parts: Vec<&str> = mint_blk.link.splitn(3, ':').collect();
+                                if link_parts.len() != 3 {
+                                    println!("🚫 Rejected MINE_BLOCK: malformed link '{}'", &mint_blk.link);
+                                    continue;
+                                }
+                                let proof_epoch: u64 = match link_parts[1].parse() {
+                                    Ok(e) => e,
+                                    Err(_) => {
+                                        println!("🚫 Rejected MINE_BLOCK: invalid epoch in link");
+                                        continue;
+                                    }
+                                };
+                                let proof_nonce: u64 = match link_parts[2].parse() {
+                                    Ok(n) => n,
+                                    Err(_) => {
+                                        println!("🚫 Rejected MINE_BLOCK: invalid nonce in link");
+                                        continue;
+                                    }
+                                };
+
+                                // Verify the PoW hash meets difficulty
+                                let difficulty_bits = {
+                                    let ms = safe_lock(&mining_state);
+                                    ms.difficulty_bits
+                                };
+                                if !verify_mining_hash(&mint_blk.account, proof_epoch, proof_nonce, difficulty_bits) {
+                                    println!("🚫 Rejected MINE_BLOCK: PoW hash does not meet difficulty ({} bits) for {}",
+                                        difficulty_bits, get_short_addr(&mint_blk.account));
+                                    continue;
+                                }
+
+                                // Verify epoch is current or very recent (within ±1 epoch tolerance
+                                // for network propagation delay)
+                                let now_secs = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs();
+                                let current_epoch = {
+                                    let ms = safe_lock(&mining_state);
+                                    ms.epoch_from_time(now_secs)
+                                };
+                                if proof_epoch > current_epoch + 1 {
+                                    println!("🚫 Rejected MINE_BLOCK: future epoch {} (current: {})",
+                                        proof_epoch, current_epoch);
+                                    continue;
+                                }
+                                // Allow blocks from recent past (up to 2 epochs back) for propagation delay
+                                if current_epoch > 2 && proof_epoch < current_epoch - 2 {
+                                    println!("🚫 Rejected MINE_BLOCK: stale epoch {} (current: {})",
+                                        proof_epoch, current_epoch);
+                                    continue;
+                                }
+
+                                // Verify reward amount is within bounds (max 1,000 LOS per block,
+                                // and no more than the epoch reward)
+                                let max_mint_cil = 1_000 * CIL_PER_LOS;
+                                let epoch_reward = MiningState::epoch_reward_cil(proof_epoch);
+                                if mint_blk.amount > max_mint_cil || mint_blk.amount > epoch_reward {
+                                    println!("🚫 Rejected MINE_BLOCK: reward {} exceeds max (cap: {}, epoch: {})",
+                                        mint_blk.amount, max_mint_cil, epoch_reward);
+                                    continue;
+                                }
+                                if mint_blk.amount == 0 {
+                                    println!("🚫 Rejected MINE_BLOCK: zero reward amount");
+                                    continue;
+                                }
+
                                 // Idempotency: skip if already processed
                                 let hash = mint_blk.calculate_hash();
                                 {
@@ -9717,6 +10218,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         continue;
                                     }
                                 }
+
+                                // Register miner in mining state (double-mining check)
+                                {
+                                    let mut ms = safe_lock(&mining_state);
+                                    // Advance epoch if needed
+                                    ms.maybe_advance_epoch(now_secs);
+                                    if ms.current_epoch_miners.contains(&mint_blk.account) {
+                                        println!("🚫 Rejected MINE_BLOCK: {} already mined epoch {}",
+                                            get_short_addr(&mint_blk.account), proof_epoch);
+                                        continue;
+                                    }
+                                    ms.current_epoch_miners.insert(mint_blk.account.clone());
+                                }
+
                                 // Process the Mint block
                                 {
                                     let mut l = safe_lock(&ledger);
@@ -9729,20 +10244,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         Ok(_) => {
                                             SAVE_DIRTY.store(true, Ordering::Release);
                                             let reward_los = mint_blk.amount / CIL_PER_LOS;
-                                            println!("⛏️  Replicated MINE_BLOCK: {} → {} LOS ({})",
-                                                get_short_addr(&mint_blk.account), reward_los, &mint_blk.link);
+                                            println!("⛏️  Replicated MINE_BLOCK: {} → {} LOS (epoch {})",
+                                                get_short_addr(&mint_blk.account), reward_los, proof_epoch);
                                             if let Err(e) = database.save_block(&hash, &mint_blk) {
                                                 eprintln!("⚠️ DB save error for replicated mine block: {}", e);
                                             }
                                         }
                                         Err(e) => {
+                                            // Revert mining state registration on failure
+                                            let mut ms = safe_lock(&mining_state);
+                                            ms.current_epoch_miners.remove(&mint_blk.account);
                                             println!("❌ Failed to replicate MINE_BLOCK: {}", e);
                                         }
                                     }
                                 }
                             }
                         } else if let Ok(inc) = serde_json::from_str::<Block>(&data) {
-                            // FIX C12-01: Mint/Slash blocks from P2P are accepted ONLY if they
+                            // Mint/Slash blocks from P2P are accepted ONLY if they
                             // carry a valid validator signature + valid PoW. Previously blanket-
                             // rejected, which caused minted tokens to exist only on the originating
                             // node — splitting the ledger permanently across the network.
@@ -9779,7 +10297,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     let is_validator = {
                                         let l = safe_lock(&ledger);
                                         l.accounts.get(&signer_addr)
-                                            .map(|a| a.balance >= MIN_VALIDATOR_STAKE_CIL)
+                                            .map(|a| a.balance >= MIN_VALIDATOR_REGISTER_CIL)
                                             .unwrap_or(false)
                                     };
                                     if !is_validator {
@@ -9815,7 +10333,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     l.accounts.insert(inc.account.clone(), AccountState { head: "0".to_string(), balance: 0, block_count: 0, is_validator: false });
                                 }
 
-                                // FIX: Skip double-sign detection for SYSTEM-CREATED blocks (Mint, Slash).
+                                // Skip double-sign detection for SYSTEM-CREATED blocks (Mint, Slash).
                                 // These blocks are created by the epoch leader or validators themselves,
                                 // NOT by the account owner. When reward + fee_reward blocks arrive
                                 // for the same validator at the same block_count via gossip, the
@@ -9839,7 +10357,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                     // Only check double-signing for registered validators.
                                     // Non-validators (wallets, faucet recipients) can't double-sign.
-                                    // FIX: record_signature returns Err("not registered") for non-validators
+                                    // record_signature returns Err("not registered") for non-validators
                                     // which was incorrectly treated as double-signing via is_err().
                                     if sm.get_profile(&inc.account).is_some() {
                                         let block_height = l.accounts.get(&inc.account)
@@ -9863,7 +10381,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             get_short_addr(&inc.account), slashed);
                                         drop(sm);
 
-                                        // FIX: Create proper Slash block instead of direct balance mutation
+                                        // Create proper Slash block instead of direct balance mutation
                                         // This ensures all nodes see the slash in the blockchain
                                         let cheater_state = l.accounts.get(&inc.account).cloned().unwrap_or(AccountState {
                                             head: "0".to_string(), balance: 0, block_count: 0, is_validator: false,
@@ -9968,15 +10486,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         println!("✅ Block Verified: {:?} from {}", inc.block_type, get_short_addr(&inc.account));
 
                                         // AUTO-UNREGISTER: If a Send block caused sender's balance
-                                        // to drop below minimum stake, unregister them as validator.
+                                        // to drop below minimum registration stake (1 LOS), unregister them.
                                         if inc.block_type == BlockType::Send {
                                             if let Some(sender_acct) = l.accounts.get_mut(&inc.account) {
-                                                if sender_acct.is_validator && sender_acct.balance < MIN_VALIDATOR_STAKE_CIL {
+                                                if sender_acct.is_validator && sender_acct.balance < MIN_VALIDATOR_REGISTER_CIL {
                                                     sender_acct.is_validator = false;
-                                                    println!("⚠️ Auto-unregistered validator {}: balance {} < minimum stake {} LOS",
+                                                    println!("⚠️ Auto-unregistered validator {}: balance {} < minimum registration stake {} LOS",
                                                         get_short_addr(&inc.account),
                                                         sender_acct.balance / CIL_PER_LOS,
-                                                        MIN_VALIDATOR_STAKE_CIL / CIL_PER_LOS);
+                                                        MIN_VALIDATOR_REGISTER_CIL / CIL_PER_LOS);
                                                 }
                                             }
                                         }

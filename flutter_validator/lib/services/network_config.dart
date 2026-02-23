@@ -74,17 +74,29 @@ class NetworkConfig {
 
 class BootstrapNode {
   final String name;
+
+  /// Clearnet address (IP or domain). null = onion-only node.
+  final String? host;
+
+  /// .onion address for Tor connections.
   final String onion;
+
+  /// External REST port (via Tor hidden service, typically 80).
   final int restPort;
+
+  /// External P2P port (via Tor, typically 4001).
   final int p2pPort;
 
-  /// Local ports for dev testnet (multiple nodes on same machine).
-  /// On production, each validator is on its own machine so these are unused.
+  /// Local REST port for clearnet access (e.g. 7030 for dev testnet).
+  /// Falls back to [restPort] when not set.
   final int? localRestPort;
+
+  /// Local P2P port for clearnet access (e.g. 7041 for dev testnet).
   final int? localP2pPort;
 
   const BootstrapNode({
     required this.name,
+    this.host,
     required this.onion,
     this.restPort = 80,
     this.p2pPort = 4001,
@@ -95,7 +107,8 @@ class BootstrapNode {
   factory BootstrapNode.fromJson(Map<String, dynamic> json) {
     return BootstrapNode(
       name: json['name'] as String? ?? 'unknown',
-      onion: json['onion'] as String,
+      host: json['host'] as String?,
+      onion: json['onion'] as String? ?? '',
       restPort: json['rest_port'] as int? ?? 80,
       p2pPort: json['p2p_port'] as int? ?? 4001,
       localRestPort: json['local_rest_port'] as int?,
@@ -103,10 +116,49 @@ class BootstrapNode {
     );
   }
 
-  /// HTTP REST URL for this node (via Tor).
-  String get restUrl =>
-      restPort == 80 ? 'http://$onion' : 'http://$onion:$restPort';
+  /// Primary REST URL — clearnet if available, otherwise .onion.
+  /// Clearnet is preferred for dev/testnet (faster, no Tor dependency).
+  /// Mainnet security (M-06) filters non-.onion URLs in ApiService.
+  String get restUrl {
+    if (host != null && host!.isNotEmpty) {
+      final port = localRestPort ?? restPort;
+      return port == 80 ? 'http://$host' : 'http://$host:$port';
+    }
+    return restPort == 80 ? 'http://$onion' : 'http://$onion:$restPort';
+  }
 
-  /// P2P address for libp2p connections.
+  /// .onion REST URL (null if no onion address configured).
+  String? get onionRestUrl {
+    if (onion.isEmpty) return null;
+    return restPort == 80 ? 'http://$onion' : 'http://$onion:$restPort';
+  }
+
+  /// All REST URLs for this node — clearnet first (faster), then onion (private).
+  /// Used by _loadBootstrapUrls to populate the full failover list.
+  List<String> get allRestUrls {
+    final urls = <String>[];
+    if (host != null && host!.isNotEmpty) {
+      final port = localRestPort ?? restPort;
+      urls.add(port == 80 ? 'http://$host' : 'http://$host:$port');
+    }
+    if (onion.isNotEmpty) {
+      final onionUrl =
+          restPort == 80 ? 'http://$onion' : 'http://$onion:$restPort';
+      // Avoid duplicate if host IS the onion address
+      if (!urls.contains(onionUrl)) urls.add(onionUrl);
+    }
+    return urls;
+  }
+
+  /// P2P address for libp2p connections (.onion — Tor required).
   String get p2pAddress => '$onion:$p2pPort';
+
+  /// Clearnet P2P address for libp2p connections (null if not configured).
+  /// Returns host:localP2pPort when both fields are set.
+  /// Used for testnet local dev — avoids Tor dependency for P2P peering.
+  /// Mainnet always uses p2pAddress (.onion only).
+  String? get localP2pAddress =>
+      (host != null && host!.isNotEmpty && localP2pPort != null)
+          ? '$host:$localP2pPort'
+          : null;
 }

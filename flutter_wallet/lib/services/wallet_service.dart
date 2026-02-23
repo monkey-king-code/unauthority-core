@@ -124,11 +124,11 @@ class WalletService {
         losLog('   Address: $address');
         losLog('   PK: ${keypair.publicKey.length} bytes');
       } finally {
-        // FIX M-04: Zero BIP39 seed bytes in Dart memory after keypair generation
+        // Zero BIP39 seed bytes in Dart memory after keypair generation
         seed.fillRange(0, seed.length, 0);
       }
     } else {
-      // SECURITY FIX H-01/M-01: Refuse Ed25519 fallback on mainnet.
+      // Refuse Ed25519 fallback on mainnet.
       // Mainnet requires Dilithium5 post-quantum signatures.
       if (mainnetMode) {
         throw Exception(
@@ -140,7 +140,7 @@ class WalletService {
       // Ed25519 + BLAKE2b fallback (TESTNET ONLY — matches los-crypto address format)
       final seed = bip39.mnemonicToSeed(mnemonic);
       try {
-        // FIX: Also store Ed25519 public key hex so sendTransaction() has it
+        // Also store Ed25519 public key hex so sendTransaction() has it
         final privateSeed = Uint8List.fromList(seed.sublist(0, 32));
         final algorithm = ed_crypto.Ed25519();
         final keyPair =
@@ -165,7 +165,7 @@ class WalletService {
           '⚠️ Ed25519 fallback wallet — TESTNET ONLY (Dilithium5 native lib not loaded)',
         );
       } finally {
-        // FIX C12-05: Zero BIP39 seed bytes in SHA256 fallback path too
+        // Zero BIP39 seed bytes in SHA256 fallback path too
         seed.fillRange(0, seed.length, 0);
       }
     }
@@ -223,11 +223,11 @@ class WalletService {
         );
         losLog('   Address: $address');
       } finally {
-        // FIX M-04: Zero BIP39 seed bytes in Dart memory
+        // Zero BIP39 seed bytes in Dart memory
         seed.fillRange(0, seed.length, 0);
       }
     } else {
-      // SECURITY FIX H-01: Refuse Ed25519 fallback on mainnet.
+      // Refuse Ed25519 fallback on mainnet.
       if (mainnetMode) {
         throw Exception(
           'MAINNET SECURITY: Dilithium5 native library required for wallet import. '
@@ -237,7 +237,7 @@ class WalletService {
 
       final seed = bip39.mnemonicToSeed(mnemonic);
       try {
-        // FIX: Also store Ed25519 public key hex so sendTransaction() has it
+        // Also store Ed25519 public key hex so sendTransaction() has it
         final privateSeed = Uint8List.fromList(seed.sublist(0, 32));
         final algorithm = ed_crypto.Ed25519();
         final keyPair =
@@ -297,7 +297,7 @@ class WalletService {
   }
 
   /// Get current wallet info.
-  /// FIX H-03: Does NOT return mnemonic by default. Use [includeMnemonic]
+  /// Does NOT return mnemonic by default. Use [includeMnemonic]
   /// only when user explicitly requests seed phrase (e.g. settings backup).
   Future<Map<String, String>?> getCurrentWallet({
     bool includeMnemonic = false,
@@ -342,7 +342,7 @@ class WalletService {
     await prefs.remove(_importModeKey);
     await prefs.remove(_cryptoModeKey);
     // Wipe secrets from secure storage
-    // FIX F4: Wrap each delete in try-catch — macOS Keychain can throw
+    // Wrap each delete in try-catch — macOS Keychain can throw
     // PlatformException -25244 (errSecInvalidOwner) when app bundle ID changes
     // between debug runs. We must not let this silently abort the logout flow.
     for (final key in [_seedKey, _publicKeyKey, _secretKeyKey]) {
@@ -408,7 +408,7 @@ class WalletService {
         throw Exception('Secret key not found in secure storage');
       }
 
-      // FIX: Secret key is stored as Base64 (see DilithiumKeypair.secretKeyBase64),
+      // Secret key is stored as Base64 (see DilithiumKeypair.secretKeyBase64),
       // NOT hex. Decode accordingly. Detect format by checking for Base64 padding
       // or non-hex characters.
       Uint8List secretKey;
@@ -430,13 +430,13 @@ class WalletService {
             '💰 [WalletService.signTransaction] Signed (sig: ${sigHex.length} hex chars), mode: dilithium5');
         return sigHex;
       } finally {
-        // SECURITY FIX L-01: Zero secret key in Dart memory after signing.
+        // Zero secret key in Dart memory after signing.
         // FFI layer zeros its copy, but Dart Uint8List remains until GC.
         secretKey.fillRange(0, secretKey.length, 0);
       }
     } else {
       // Fallback: Ed25519 signing when native Dilithium5 is unavailable.
-      // SECURITY FIX H-01: Refuse Ed25519 fallback on mainnet.
+      // Refuse Ed25519 fallback on mainnet.
       if (mainnetMode) {
         throw Exception(
           'MAINNET SECURITY: Dilithium5 native library required for signing. '
@@ -465,7 +465,7 @@ class WalletService {
             '💰 [WalletService.signTransaction] Signed (sig: ${sigHex.length} hex chars), mode: ed25519');
         return sigHex;
       } finally {
-        // SECURITY FIX L-01: Zero private key material after signing
+        // Zero private key material after signing
         privateKeyBytes.fillRange(0, privateKeyBytes.length, 0);
         seed.fillRange(0, seed.length, 0);
       }

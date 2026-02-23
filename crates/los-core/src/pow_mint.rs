@@ -218,16 +218,23 @@ impl MiningState {
             // Way too many miners → increase difficulty (harder)
             let adjustment = ((miners / TARGET_MINERS_PER_EPOCH).ilog2() + 1)
                 .min(MAX_DIFFICULTY_ADJUSTMENT_BITS);
-            self.difficulty_bits = (self.difficulty_bits + adjustment).min(MAX_MINING_DIFFICULTY_BITS);
+            self.difficulty_bits =
+                (self.difficulty_bits + adjustment).min(MAX_MINING_DIFFICULTY_BITS);
         } else if miners > TARGET_MINERS_PER_EPOCH {
             // Slightly too many → +1 bit
             self.difficulty_bits = (self.difficulty_bits + 1).min(MAX_MINING_DIFFICULTY_BITS);
         } else if miners < TARGET_MINERS_PER_EPOCH / 2 && miners > 0 {
             // Too few → decrease difficulty (easier), but not below minimum
-            self.difficulty_bits = self.difficulty_bits.saturating_sub(1).max(MIN_MINING_DIFFICULTY_BITS);
+            self.difficulty_bits = self
+                .difficulty_bits
+                .saturating_sub(1)
+                .max(MIN_MINING_DIFFICULTY_BITS);
         } else if miners == 0 {
             // No miners at all → decrease by 2 bits (faster recovery)
-            self.difficulty_bits = self.difficulty_bits.saturating_sub(2).max(MIN_MINING_DIFFICULTY_BITS);
+            self.difficulty_bits = self
+                .difficulty_bits
+                .saturating_sub(2)
+                .max(MIN_MINING_DIFFICULTY_BITS);
         }
         // miners == TARGET_MINERS_PER_EPOCH → no change (sweet spot)
 
@@ -277,7 +284,12 @@ impl MiningState {
         }
 
         // 4. Verify PoW hash
-        if !verify_mining_hash(&proof.address, proof.epoch, proof.nonce, self.difficulty_bits) {
+        if !verify_mining_hash(
+            &proof.address,
+            proof.epoch,
+            proof.nonce,
+            self.difficulty_bits,
+        ) {
             return Err(format!(
                 "Invalid PoW: hash does not meet difficulty ({} leading zero bits)",
                 self.difficulty_bits
@@ -407,10 +419,10 @@ pub fn mine(
     let mut nonce = start;
     loop {
         // Check cancellation every 65536 hashes (~0.05ms overhead)
-        if nonce.wrapping_sub(start) & 0xFFFF == 0 {
-            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                return None;
-            }
+        if nonce.wrapping_sub(start) & 0xFFFF == 0
+            && cancel.load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return None;
         }
 
         if verify_mining_hash(address, epoch, nonce, difficulty_bits) {
@@ -478,7 +490,10 @@ mod tests {
 
     #[test]
     fn test_epoch_reward_halving() {
-        assert_eq!(MiningState::epoch_reward_cil(0), MINING_REWARD_PER_EPOCH_CIL);
+        assert_eq!(
+            MiningState::epoch_reward_cil(0),
+            MINING_REWARD_PER_EPOCH_CIL
+        );
 
         let interval = effective_mining_halving_interval();
         assert_eq!(
@@ -511,7 +526,9 @@ mod tests {
 
         // Simulate: 5 miners in epoch 0
         for i in 0..5 {
-            state.current_epoch_miners.insert(format!("LOS_miner_{}", i));
+            state
+                .current_epoch_miners
+                .insert(format!("LOS_miner_{}", i));
         }
         assert_eq!(state.current_epoch_miners.len(), 5);
 
@@ -568,7 +585,8 @@ mod tests {
 
         // Find a valid nonce (should be very fast with difficulty=1)
         let cancel = std::sync::atomic::AtomicBool::new(false);
-        let nonce = mine("LOS_test_miner", 0, 1, &cancel).expect("Should find nonce with difficulty=1");
+        let nonce =
+            mine("LOS_test_miner", 0, 1, &cancel).expect("Should find nonce with difficulty=1");
 
         let proof = MiningProof {
             address: "LOS_test_miner".to_string(),
@@ -650,7 +668,10 @@ mod tests {
 
         // Mine with low difficulty (should be instant)
         let nonce = mine("LOS_miner", 0, 8, &cancel);
-        assert!(nonce.is_some(), "Should find valid nonce with 8-bit difficulty");
+        assert!(
+            nonce.is_some(),
+            "Should find valid nonce with 8-bit difficulty"
+        );
 
         // Verify the found nonce
         let n = nonce.unwrap();
@@ -689,7 +710,11 @@ mod tests {
         let tiny_supply = 1u128;
         let result = state.verify_proof(&proof, now, tiny_supply);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 1, "Reward should be capped at remaining supply");
+        assert_eq!(
+            result.unwrap(),
+            1,
+            "Reward should be capped at remaining supply"
+        );
     }
 
     #[test]
