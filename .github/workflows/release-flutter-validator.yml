@@ -77,7 +77,7 @@ jobs:
       - name: Bundle native library + los-node binary
         working-directory: flutter_validator
         run: |
-          APP="build/macos/Build/Products/Release/LOS Validator Node.app"
+          APP="build/macos/Build/Products/Release/LOS Validator & Miner.app"
           FRAMEWORKS="$APP/Contents/Frameworks"
           RESOURCES="$APP/Contents/Resources"
           mkdir -p "$FRAMEWORKS" "$RESOURCES/bin"
@@ -96,7 +96,7 @@ jobs:
           if [ "$VERSION" = "$GITHUB_REF_NAME" ]; then VERSION="${{ github.event.inputs.version || '1.0.0-mainnet' }}"; fi
 
           mkdir -p release/dmg_staging
-          cp -R "build/macos/Build/Products/Release/LOS Validator Node.app" release/dmg_staging/
+          cp -R "build/macos/Build/Products/Release/LOS Validator & Miner.app" release/dmg_staging/
           ln -s /Applications release/dmg_staging/Applications
 
           cat > release/dmg_staging/README.txt << 'EOF'
@@ -106,7 +106,7 @@ jobs:
           ╚══════════════════════════════════════════════════════════════╝
 
           INSTALLATION:
-            Drag "LOS Validator Node.app" to the Applications folder.
+            Drag "LOS Validator & Miner.app" to the Applications folder.
 
           FIRST RUN:
             1. Open the app from Applications
