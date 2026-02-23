@@ -107,7 +107,7 @@ Networking layer — all traffic over Tor.
 | `tor_transport.rs` | SOCKS5 proxy connections, Tor auto-detection, onion address management |
 | `p2p_integration.rs` | Peer management, connection tracking, peer table maintenance |
 | `p2p_encryption.rs` | Noise Protocol encryption for P2P gossip channels |
-| `fee_scaling.rs` | Dynamic fee calculation based on network congestion |
+| `fee_scaling.rs` | Anti-spam rate limiting and fee multiplier for high-frequency senders |
 | `slashing_integration.rs` | Network-level slashing event propagation |
 | `validator_rewards.rs` | Network-level reward distribution coordination |
 

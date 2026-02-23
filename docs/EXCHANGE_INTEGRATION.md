@@ -301,7 +301,7 @@ Where `amount_cil_string` is the amount converted to CIL as a string (e.g., `"10
 
 ### Fee Structure
 
-Transaction fees are dynamic, based on network congestion:
+Transaction fees use a **flat fee model** — every transaction costs a fixed `BASE_FEE_CIL`:
 
 ```
 GET /fee-info
@@ -317,8 +317,8 @@ GET /fee-info
 }
 ```
 
-- **Base fee:** 0.00001 LOS (1,000,000 CIL)
-- **Scaling:** Exponential (2× per tx above threshold of 5 tx/minute per account)
+- **Base fee:** 0.00001 LOS (1,000,000 CIL) — flat per transaction
+- **Anti-spam:** Rate limiter applies 2× multiplier for addresses exceeding 10 tx/sec (security mechanism, not fee scaling)
 - Fees are automatically calculated and deducted
 
 ---

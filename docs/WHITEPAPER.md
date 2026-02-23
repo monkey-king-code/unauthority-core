@@ -42,7 +42,7 @@ Key differentiators:
 ## Design Principles
 
 1. **Immutability** — No governance override, no admin keys, no emergency pauses
-2. **Permissionless** — Anyone can run a validator with 1,000 LOS stake
+2. **Permissionless** — Anyone can register as a validator with just 1 LOS (1,000 LOS for reward eligibility)
 3. **Privacy** — All traffic routed through Tor; no KYC, no clearnet dependency
 4. **Determinism** — Integer-only math in all consensus-critical paths
 5. **Simplicity** — Single binary (`los-node`), auto-bootstrap, minimal configuration
@@ -88,7 +88,7 @@ Each block references its `previous` block hash, forming per-account chains. Cro
 | `public_key` | String | Dilithium5 hex public key |
 | `work` | u64 | Proof-of-Work nonce (anti-spam) |
 | `timestamp` | u64 | Unix timestamp |
-| `fee` | u128 | Dynamic fee in CIL |
+| `fee` | u128 | Transaction fee in CIL (flat `BASE_FEE_CIL`) |
 
 ### Benefits
 
@@ -161,7 +161,8 @@ If the leader fails (timeout after 5,000ms), a **view change** is triggered:
 |---|---|
 | **Total Supply** | 21,936,236 LOS (Fixed, non-inflationary) |
 | **Atomic Unit** | CIL (1 LOS = 10^11 CIL) |
-| **Dev Treasury** | 777,823 LOS (~3.5%) |
+| **Dev Treasury** | 773,823 LOS (~3.5%) |
+| **Bootstrap Validators** | 4,000 LOS (4 × 1,000) |
 | **Public Allocation** | 21,158,413 LOS (~96.5%) |
 | **Reward Pool** | 500,000 LOS (from Dev Treasury, non-inflationary) |
 
@@ -173,8 +174,8 @@ If the leader fails (timeout after 5,000ms), a **view change** is triggered:
 | Dev Treasury 2 | 245,710 | Development operations |
 | Dev Treasury 3 | 50,000 | Community grants |
 | Dev Treasury 4 | 50,000 | Emergency fund |
-| Bootstrap Validators | 4,000 | 4 validators × 1,000 LOS stake |
-| **Total** | **777,823** | |
+| **Dev Subtotal** | **773,823** | |
+| **Total Non-Public** | **777,823** | |
 
 ### Public Supply Distribution
 
@@ -267,11 +268,11 @@ This is pure linear stake-weighted distribution (Sybil-neutral).
 
 ### Eligibility
 
-All conditions must be met:
+Validator registration requires only **1 LOS** (permissionless). Reward distribution requires all conditions below:
 
 | Requirement | Threshold |
 |---|---|
-| Minimum stake | 1,000 LOS |
+| Minimum stake for rewards | 1,000 LOS |
 | Minimum uptime | 95% of epoch heartbeats |
 | Probation | 1 epoch after registration |
 | Genesis bootstrap | Not eligible (mainnet only) |
@@ -502,7 +503,7 @@ The DEX runs as Layer 2 smart contracts:
 | Floating-point non-determinism | Zero f32/f64 in consensus; all u128 integer math |
 | Double spending | Per-account chain with `previous` hash linking; aBFT finality |
 | Front-running (MEV) | Block-lattice doesn't have a mempool ordering advantage |
-| Sybil attack | 1,000 LOS minimum stake for validators |
+| Sybil attack | 1 LOS registration minimum; 1,000 LOS for reward eligibility and quorum weight |
 | Inflation bug | Fixed supply with checked arithmetic and u128 overflow protection |
 | Network partition | aBFT liveness requires ≥2/3 validators; view change on leader failure |
 

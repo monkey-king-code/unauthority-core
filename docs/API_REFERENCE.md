@@ -416,7 +416,7 @@ List all active validators.
 
 ### POST `/register-validator`
 
-Register as a network validator. Requires Dilithium5 signature and ≥1,000 LOS stake.
+Register as a network validator. Requires Dilithium5 signature and ≥1 LOS balance. Reward eligibility requires ≥1,000 LOS.
 
 **Request:**
 ```json

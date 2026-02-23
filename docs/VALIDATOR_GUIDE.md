@@ -31,7 +31,7 @@ This guide covers everything you need to run a validator node on the Unauthority
 | **RAM** | 2 GB | 4 GB |
 | **Disk** | 10 GB SSD | 50 GB SSD |
 | **Tor** | Installed and running | Latest stable |
-| **Stake** | 1,000 LOS | 1,000+ LOS |
+| **Stake** | 1 LOS (register) / 1,000 LOS (rewards) | 1,000+ LOS |
 | **Uptime** | ≥95% for rewards | 99%+ |
 | **Network** | Any internet connection | Stable, low latency |
 
@@ -194,7 +194,7 @@ On first start, you'll see:
 
 ## Registering as a Validator
 
-After your node is running and your account has ≥1,000 LOS:
+After your node is running and your account has ≥1 LOS (≥1,000 LOS for reward eligibility):
 
 ### Via REST API
 
@@ -342,7 +342,7 @@ Rewards come from a fixed pool of 500,000 LOS (non-inflationary — already part
 | **Per Epoch** | 5,000 LOS (halves every 48 epochs) |
 | **Formula** | `reward_i = budget × stake_i / Σ(all_stakes)` |
 | **Math** | Pure linear integer arithmetic — no floating-point, Sybil-neutral |
-| **Min Stake** | 1,000 LOS |
+| **Min Stake (Rewards)** | 1,000 LOS |
 | **Min Uptime** | ≥95% |
 
 ### Halving Schedule
