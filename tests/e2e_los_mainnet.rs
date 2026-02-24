@@ -769,7 +769,7 @@ async fn test_validator_rewards_epoch() {
         let kp = generate_keypair();
         let addr = public_key_to_address(&kp.public_key);
         let stake_cil = stake_los * CIL_PER_LOS;
-        pool.register_validator(&addr, true, stake_cil); // genesis validators
+        pool.register_validator(&addr, false, stake_cil); // public validators (not genesis)
         addrs.push(addr.clone());
         println!(
             "  Validator {}: {} LOS (stake weight = {})",

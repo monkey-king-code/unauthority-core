@@ -4,11 +4,11 @@ version = 4
 
 [[package]]
 name = "los-contracts"
-version = "0.1.0"
+version = "2.0.1"
 dependencies = [
  "los-sdk",
 ]
 
 [[package]]
 name = "los-sdk"
-version = "0.1.0"
+version = "2.0.1"

@@ -456,8 +456,15 @@ impl Ledger {
         // 8. TRANSACTION LOGIC BASED ON BLOCK TYPE
         match block.block_type {
             BlockType::Mint => {
+                // FEE_REWARD blocks redistribute fees already collected from user balances.
+                // They must NOT deduct from remaining_supply (which tracks unminted public pool).
+                // Without this distinction, every fee redistribution permanently decreases
+                // remaining_supply, causing supply deflation and eventually blocking PoW mints.
+                let is_fee_reward = block.link.starts_with("FEE_REWARD:");
+
                 // Check supply FIRST before modifying any state
-                if self.distribution.remaining_supply < block.amount {
+                // (skip for fee rewards — they come from accumulated fees, not remaining_supply)
+                if !is_fee_reward && self.distribution.remaining_supply < block.amount {
                     return Err("Distribution Error: Supply exhausted!".to_string());
                 }
 
@@ -487,15 +494,19 @@ impl Ledger {
 
                 // Only modify state after validation passes
                 state.balance = state.balance.saturating_add(block.amount);
-                self.distribution.remaining_supply = self
-                    .distribution
-                    .remaining_supply
-                    .saturating_sub(block.amount);
+                // Deduct from remaining_supply ONLY for real mints (PoW, validator rewards).
+                // Fee rewards are already-circulating tokens being redistributed.
+                if !is_fee_reward {
+                    self.distribution.remaining_supply = self
+                        .distribution
+                        .remaining_supply
+                        .saturating_sub(block.amount);
+                }
 
             }
             BlockType::Send => {
                 // Enforce minimum transaction fee to prevent zero-fee spam
-                const MIN_TX_FEE_CIL: u128 = 100_000; // 0.001 LOS minimum fee
+                const MIN_TX_FEE_CIL: u128 = 100_000; // 0.000001 LOS minimum fee (= BASE_FEE_CIL)
                 if block.fee < MIN_TX_FEE_CIL {
                     return Err(format!(
                         "Fee too low: {} CIL < minimum {} CIL (0.001 LOS)",

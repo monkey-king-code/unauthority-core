@@ -290,7 +290,7 @@ impl ValidatorRewardPool {
     /// Set expected heartbeats for all validators at the start of an epoch.
     /// `heartbeat_interval_secs` = time between heartbeats (e.g., 60s).
     ///
-    /// **PRORATING FIX:** When called at epoch END (before distribution),
+    /// **PRORATING:** When called at epoch END (before distribution),
     /// validators that already have heartbeats get `expected` prorated
     /// to match their actual participation window, preventing unfair
     /// penalization of mid-epoch joins or restarts.

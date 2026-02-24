@@ -31,9 +31,9 @@ set -e
 # ── Configuration ────────────────────────────────────────────────────────────
 NETWORK="${NETWORK:-testnet}"
 if [ "$NETWORK" = "mainnet" ]; then
-    VERSION="2.0.2"
+    VERSION="2.1.0"
 else
-    VERSION="2.0.2-testnet"
+    VERSION="2.1.0-testnet"
 fi
 APP_NAME="LOS Wallet"
 BUNDLE_ID="com.unauthority.wallet"

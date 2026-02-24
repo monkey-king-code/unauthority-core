@@ -331,17 +331,31 @@ impl LosNode for LosGrpcService {
                 "signature is required (client must sign with Dilithium5)",
             ));
         }
+        if req.public_key.is_empty() {
+            return Err(Status::invalid_argument(
+                "public_key is required when providing signature (hex-encoded Dilithium5 public key)",
+            ));
+        }
 
         // Forward to local REST /send endpoint which handles everything:
         // PoW validation, fee calculation, consensus flow, auto-receive
         let rest_url = format!("http://{}:{}/send", self.rest_bind_host, self.rest_api_port);
-        let payload = serde_json::json!({
+        let mut payload = serde_json::json!({
             "from": req.from,
             "target": req.to,
             "amount_cil": req.amount_cil,
             "signature": hex::encode(&req.signature),
-            "fee": req.priority_fee,
+            "fee": req.fee,
         });
+        // CRITICAL: Forward public_key — REST handler requires it when signature is present.
+        // Without this field, REST returns 400 "public_key field is REQUIRED".
+        if !req.public_key.is_empty() {
+            payload["public_key"] = serde_json::Value::String(req.public_key.clone());
+        }
+        // Forward client timestamp (part of signing_hash for signature verification)
+        if req.timestamp > 0 {
+            payload["timestamp"] = serde_json::json!(req.timestamp);
+        }
 
         let client = &self.http_client;
         match client.post(&rest_url).json(&payload).send().await {

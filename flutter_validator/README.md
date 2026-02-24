@@ -2,7 +2,7 @@
 
 Validator node dashboard for **Unauthority (LOS)** blockchain. Track node status, manage keys, and monitor consensus participation.
 
-[![Version](https://img.shields.io/badge/version-2.0.2-blue)]()
+[![Version](https://img.shields.io/badge/version-2.1.0-blue)]()
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue)](../LICENSE)
 
 ---

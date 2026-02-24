@@ -115,6 +115,9 @@ message SendTransactionRequest {
   uint64 amount_cil = 3;
   uint64 priority_fee = 4;       // Optional priority tip for validators
   bytes signature = 5;           // Cryptographic signature
+  string public_key = 6;         // REQUIRED when signature is provided (hex-encoded Dilithium5 public key)
+  uint64 timestamp = 7;          // Client timestamp (part of signing_hash, required for client-signed tx)
+  uint64 fee = 8;                // Client fee in CIL (part of signing_hash, required for client-signed tx)
 }
 
 message SendTransactionResponse {

@@ -32,10 +32,16 @@ class Account {
   factory Account.fromJson(Map<String, dynamic> json) {
     // Use containsKey instead of != 0 so real zero balances
     // are not skipped. A zero balance from balance_cil is still valid data.
-    // Removed duplicate containsKey check that made json['balance'] unreachable.
-    final int parsedBalance = json.containsKey('balance_cil')
-        ? _parseIntField(json['balance_cil'])
-        : _parseIntField(json['balance']);
+    // Prefer balance_cil_str (string) over balance_cil (numeric) for
+    // JSON precision safety — numbers > 2^53 lose precision as doubles.
+    final int parsedBalance;
+    if (json['balance_cil_str'] != null) {
+      parsedBalance = int.tryParse(json['balance_cil_str'].toString()) ?? 0;
+    } else if (json.containsKey('balance_cil')) {
+      parsedBalance = _parseIntField(json['balance_cil']);
+    } else {
+      parsedBalance = _parseIntField(json['balance']);
+    }
 
     return Account(
       address: json['address'] ?? '',

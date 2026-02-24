@@ -395,6 +395,11 @@ impl CheckpointManager {
         height.is_multiple_of(CHECKPOINT_INTERVAL) && height > self.latest_checkpoint_height
     }
 
+    /// Get the latest finalized checkpoint height (0 if none finalized yet)
+    pub fn latest_finalized_height(&self) -> u64 {
+        self.latest_checkpoint_height
+    }
+
     /// Get all checkpoints (for sync)
     pub fn get_all_checkpoints(
         &self,

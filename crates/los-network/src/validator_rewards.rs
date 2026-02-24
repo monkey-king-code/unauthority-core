@@ -150,7 +150,7 @@ pub fn calculate_transaction_fee(base_fee: u128, priority_tip: u128) -> Result<u
     Ok(total_fee)
 }
 
-/// Create comprehensive transaction fee structure
+/// Build transaction fee structure
 pub fn build_transaction_fee(
     tx_size_bytes: u64,
     priority_tip_cil: u128,
@@ -336,7 +336,7 @@ pub struct ValidatorRewardStats {
     pub average_fee_per_block_cil: u128,
 }
 
-/// Get comprehensive statistics for a validator
+/// Get statistics for a validator
 pub fn get_validator_stats(
     validator_address: &str,
     rewards: &BTreeMap<String, RewardAccount>,

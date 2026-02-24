@@ -313,7 +313,6 @@ impl SlashingManager {
             let slash_amount = if DOWNTIME_SLASH_BPS >= 10_000 {
                 staked_amount_cil
             } else {
-                // Use DOWNTIME_SLASH_BPS constant properly
                 // slash = stake * bps / 10_000, rounds up via ceiling division
                 (staked_amount_cil * DOWNTIME_SLASH_BPS as u128).div_ceil(10_000)
             };

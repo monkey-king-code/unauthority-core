@@ -724,8 +724,7 @@ class ApiService {
               !completer.isCompleted) {
             _getHealth(url).recordSuccess(sw.elapsedMilliseconds);
             completer.complete(url);
-            losLog(
-                '🏁 [Race] Winner: $url (${sw.elapsedMilliseconds}ms)');
+            losLog('🏁 [Race] Winner: $url (${sw.elapsedMilliseconds}ms)');
           } else {
             _getHealth(url).recordFailure();
             failCount++;
@@ -1748,9 +1747,8 @@ class ApiService {
             }
 
             // Skip P2P-only addresses (port 4xxx = libp2p gossip)
-            final rawPort = host.contains(':')
-                ? int.tryParse(host.split(':').last)
-                : null;
+            final rawPort =
+                host.contains(':') ? int.tryParse(host.split(':').last) : null;
             if (rawPort != null && rawPort >= 4000 && rawPort < 5000) {
               losLog('🚫 Skipping P2P-only address: $host');
               continue;

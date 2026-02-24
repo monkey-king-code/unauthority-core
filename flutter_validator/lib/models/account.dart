@@ -14,12 +14,16 @@ class Account {
   final int balance; // In CIL (smallest unit)
   final int cilBalance; // Staked/locked CIL
   final List<Transaction> history;
+  final String? headBlock; // Latest block hash (frontier) — from /account/:addr
+  final int blockCount; // Number of blocks in this account's chain
 
   Account({
     required this.address,
     required this.balance,
     required this.cilBalance,
     required this.history,
+    this.headBlock,
+    this.blockCount = 0,
   });
 
   factory Account.fromJson(Map<String, dynamic> json) {
@@ -49,6 +53,8 @@ class Account {
       address: json['address'] ?? '',
       balance: parsedBalance,
       cilBalance: 0,
+      headBlock: json['head_block'],
+      blockCount: _parseIntField(json['block_count']),
       // Backend sends "transactions", not "history"
       history: ((json['transactions'] ?? json['history']) as List?)
               ?.map((tx) => Transaction.fromJson(tx))
@@ -72,6 +78,7 @@ class Transaction {
   final int amount; // In CIL
   final int timestamp;
   final String type;
+  final int fee; // In CIL
 
   Transaction({
     required this.txid,
@@ -80,6 +87,7 @@ class Transaction {
     required this.amount,
     required this.timestamp,
     required this.type,
+    this.fee = 0,
   });
 
   factory Transaction.fromJson(Map<String, dynamic> json) {
@@ -102,6 +110,7 @@ class Transaction {
       amount: parsedAmount,
       timestamp: _parseIntField(json['timestamp']),
       type: (json['type'] ?? 'transfer').toString(),
+      fee: _parseIntField(json['fee']),
     );
   }
 

@@ -218,8 +218,11 @@ fn compute_output(amount_in: u128, reserve_in: u128, reserve_out: u128) -> u128 
 
 /// Deduct fee from input amount. Returns (after_fee, fee).
 fn deduct_fee(amount: u128, fee_bps: u128) -> (u128, u128) {
-    let fee = amount * fee_bps / BPS_DENOMINATOR;
-    (amount - fee, fee)
+    // checked_mul to prevent WASM trap on large amounts * fee_bps
+    let fee = amount.checked_mul(fee_bps)
+        .map(|v| v / BPS_DENOMINATOR)
+        .unwrap_or_else(|| (amount / BPS_DENOMINATOR).saturating_mul(fee_bps));
+    (amount.saturating_sub(fee), fee)
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -425,8 +428,22 @@ pub extern "C" fn add_liquidity() -> i32 {
     }
 
     // LP = min(amount_a * total_lp / reserve_a, amount_b * total_lp / reserve_b)
-    let lp_from_a = amount_a * total_lp / reserve_a;
-    let lp_from_b = amount_b * total_lp / reserve_b;
+    // Use checked_mul to prevent WASM trap on u128 overflow
+    let lp_from_a = match amount_a.checked_mul(total_lp) {
+        Some(v) => v / reserve_a,
+        None => {
+            // Overflow fallback: scale down to avoid trap
+            let ratio = (amount_a / reserve_a).max(1);
+            ratio.saturating_mul(total_lp)
+        }
+    };
+    let lp_from_b = match amount_b.checked_mul(total_lp) {
+        Some(v) => v / reserve_b,
+        None => {
+            let ratio = (amount_b / reserve_b).max(1);
+            ratio.saturating_mul(total_lp)
+        }
+    };
     let lp_tokens = if lp_from_a < lp_from_b {
         lp_from_a
     } else {
@@ -441,14 +458,16 @@ pub extern "C" fn add_liquidity() -> i32 {
         ));
     }
 
-    // Calculate actual amounts used (proportional)
-    let actual_a = lp_tokens * reserve_a / total_lp;
-    let actual_b = lp_tokens * reserve_b / total_lp;
+    // Calculate actual amounts used (proportional) — checked to prevent WASM trap
+    let actual_a = lp_tokens.checked_mul(reserve_a).map(|v| v / total_lp)
+        .unwrap_or_else(|| (lp_tokens / total_lp).saturating_mul(reserve_a));
+    let actual_b = lp_tokens.checked_mul(reserve_b).map(|v| v / total_lp)
+        .unwrap_or_else(|| (lp_tokens / total_lp).saturating_mul(reserve_b));
 
-    // Update reserves
-    set_state_u128(&format!("{}:reserve_a", prefix), reserve_a + actual_a);
-    set_state_u128(&format!("{}:reserve_b", prefix), reserve_b + actual_b);
-    set_state_u128(&format!("{}:total_lp", prefix), total_lp + lp_tokens);
+    // Update reserves — checked_add to prevent overflow
+    set_state_u128(&format!("{}:reserve_a", prefix), reserve_a.saturating_add(actual_a));
+    set_state_u128(&format!("{}:reserve_b", prefix), reserve_b.saturating_add(actual_b));
+    set_state_u128(&format!("{}:total_lp", prefix), total_lp.saturating_add(lp_tokens));
 
     // Update LP shares
     let who = caller();
@@ -528,9 +547,11 @@ pub extern "C" fn remove_liquidity() -> i32 {
         return fail("Pool has no liquidity");
     }
 
-    // Proportional token amounts
-    let amount_a = lp_amount * reserve_a / total_lp;
-    let amount_b = lp_amount * reserve_b / total_lp;
+    // Proportional token amounts — checked to prevent WASM trap
+    let amount_a = lp_amount.checked_mul(reserve_a).map(|v| v / total_lp)
+        .unwrap_or_else(|| (lp_amount / total_lp).saturating_mul(reserve_a));
+    let amount_b = lp_amount.checked_mul(reserve_b).map(|v| v / total_lp)
+        .unwrap_or_else(|| (lp_amount / total_lp).saturating_mul(reserve_b));
 
     // Slippage protection
     if amount_a < min_amount_a || amount_b < min_amount_b {
@@ -672,11 +693,13 @@ pub extern "C" fn swap() -> i32 {
     }
 
     // Update reserves — fee stays in pool for LPs
+    // Use saturating_add for input side (prevent overflow trap)
+    // Subtraction is safe: amount_out < reserve_out is verified above
     if is_a_to_b {
-        set_state_u128(&format!("{}:reserve_a", prefix), reserve_a + amount_in);
+        set_state_u128(&format!("{}:reserve_a", prefix), reserve_a.saturating_add(amount_in));
         set_state_u128(&format!("{}:reserve_b", prefix), reserve_b - amount_out);
     } else {
-        set_state_u128(&format!("{}:reserve_b", prefix), reserve_b + amount_in);
+        set_state_u128(&format!("{}:reserve_b", prefix), reserve_b.saturating_add(amount_in));
         set_state_u128(&format!("{}:reserve_a", prefix), reserve_a - amount_out);
     }
 
@@ -863,13 +886,20 @@ pub extern "C" fn get_position() -> i32 {
     let total_lp = get_state_u128(&format!("{}:total_lp", prefix));
 
     let (amount_a, amount_b) = if total_lp > 0 && shares > 0 {
-        (shares * reserve_a / total_lp, shares * reserve_b / total_lp)
+        // Checked mul to prevent WASM trap on u128 overflow
+        let a = shares.checked_mul(reserve_a).map(|v| v / total_lp)
+            .unwrap_or_else(|| (shares / total_lp).saturating_mul(reserve_a));
+        let b = shares.checked_mul(reserve_b).map(|v| v / total_lp)
+            .unwrap_or_else(|| (shares / total_lp).saturating_mul(reserve_b));
+        (a, b)
     } else {
         (0, 0)
     };
 
     let share_pct_bps = if total_lp > 0 {
-        (shares * BPS_DENOMINATOR) / total_lp
+        shares.checked_mul(BPS_DENOMINATOR)
+            .map(|v| v / total_lp)
+            .unwrap_or_else(|| (shares / total_lp).saturating_mul(BPS_DENOMINATOR))
     } else {
         0
     };
@@ -896,12 +926,13 @@ pub extern "C" fn list_pools() -> i32 {
     }
 
     let mut data = String::from("[");
+    let mut emitted = 0u64;
     for i in 0..count {
         let pid = get_state_str(&format!("pool_list:{}", i));
         if pid.is_empty() {
             continue;
         }
-        if i > 0 {
+        if emitted > 0 {
             data.push(',');
         }
 
@@ -921,6 +952,7 @@ pub extern "C" fn list_pools() -> i32 {
             u128_to_str(reserve_b),
             u128_to_str(total_lp),
         ));
+        emitted += 1;
     }
     data.push(']');
 

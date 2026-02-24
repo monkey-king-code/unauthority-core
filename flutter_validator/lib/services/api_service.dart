@@ -594,28 +594,30 @@ class ApiService {
 
   /// Execute an HTTP request with intelligent failover.
   ///
-  /// STRATEGY: "Local first, external as background upgrade"
-  /// When we have a local node running → use it IMMEDIATELY (< 100ms).
-  /// Don't waste 45-225s trying .onion nodes through Tor SOCKS first.
+  /// STRATEGY (network-aware):
+  /// - MAINNET: External .onion peers FIRST (cross-verification integrity),
+  ///   local node as FALLBACK only if all external peers unreachable.
+  /// - TESTNET: Local node first (instant), external as background upgrade.
   ///
-  /// Order:
-  /// 1. Local node (direct HTTP, no SOCKS) — instant response
-  /// 2. External .onion peer via Tor SOCKS (sticky + retry)
-  /// 3. Failover to other .onion nodes
+  /// The spec requires: "flutter_validator MUST NOT use its own local onion
+  /// address/localhost for API consumption. It strictly connects to EXTERNAL
+  /// peers to verify network consensus integrity."
   Future<http.Response> _requestWithFailover(
     Future<http.Response> Function(String url) requestFn,
     String endpoint,
   ) async {
     await ensureReady();
 
-    // ── Phase 0: Local node FIRST (instant, no Tor needed) ──
-    // The node is running at 127.0.0.1:3035 — response in < 100ms.
-    // Don't make the user wait 45-225s for Tor when local data is available.
-    if (_localNodeUrl != null) {
+    final isMainnet = environment == NetworkEnvironment.mainnet;
+
+    // ── Phase 0: Local node (testnet=FIRST, mainnet=LAST) ──
+    // On testnet: local node is instant (< 100ms), saves waiting for Tor.
+    // On mainnet: skip this phase — try external peers first (see Phase 3 below).
+    if (_localNodeUrl != null && !isMainnet) {
       try {
-        final response = await _directClient
-            .get(Uri.parse('$_localNodeUrl$endpoint'))
-            .timeout(const Duration(seconds: 5));
+        // Use requestFn with local URL to preserve HTTP method (GET/POST)
+        final response =
+            await requestFn(_localNodeUrl!).timeout(const Duration(seconds: 5));
 
         if (response.statusCode < 500) {
           if (!_usingLocalFallback) {
@@ -725,7 +727,31 @@ class ApiService {
       }
     }
 
-    // ── Phase 2: Everything failed ──
+    // ── Phase 2: Mainnet local fallback (LAST RESORT) ──
+    // On mainnet, we tried external peers first. If ALL failed, fall back
+    // to local node as a last resort rather than throwing an error.
+    // This provides degraded-but-functional UX while displaying a warning.
+    if (isMainnet && _localNodeUrl != null) {
+      try {
+        // Use requestFn to preserve HTTP method (GET/POST)
+        final response =
+            await requestFn(_localNodeUrl!).timeout(const Duration(seconds: 5));
+
+        if (response.statusCode < 500) {
+          if (!_usingLocalFallback) {
+            _usingLocalFallback = true;
+            losLog('⚠️ MAINNET: All external peers unreachable — '
+                'using local node as LAST RESORT. '
+                'Data is NOT externally verified!');
+          }
+          return response;
+        }
+      } catch (_) {
+        // Local node also dead — fall through to error
+      }
+    }
+
+    // ── Phase 3: Everything failed ──
     throw Exception('All nodes unreachable for $endpoint');
   }
 
@@ -881,8 +907,7 @@ class ApiService {
               !completer.isCompleted) {
             _getHealth(url).recordSuccess(sw.elapsedMilliseconds);
             completer.complete(url);
-            losLog(
-                '🏁 [Race] Winner: $url (${sw.elapsedMilliseconds}ms)');
+            losLog('🏁 [Race] Winner: $url (${sw.elapsedMilliseconds}ms)');
           } else {
             _getHealth(url).recordFailure();
             failCount++;
@@ -1058,6 +1083,25 @@ class ApiService {
     }
   }
 
+  /// Get fee estimate for an address.
+  /// Backend: GET /fee-estimate/:address → {base_fee_cil, estimated_fee_cil, fee_multiplier, ...}
+  Future<Map<String, dynamic>> getFeeEstimate(String address) async {
+    losLog('💰 [API] getFeeEstimate: $address');
+    try {
+      final response = await _requestWithFailover(
+        (url) => _clientFor(url).get(Uri.parse('$url/fee-estimate/$address')),
+        '/fee-estimate/$address',
+      );
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        return json.decode(response.body) as Map<String, dynamic>;
+      }
+      throw Exception('Failed to get fee estimate: ${response.statusCode}');
+    } catch (e) {
+      losLog('💰 getFeeEstimate error: $e');
+      rethrow;
+    }
+  }
+
   /// Parse an int from a value that may be int, String, double, or null.
   static int _safeInt(dynamic v, [int fallback = 0]) {
     if (v == null) return fallback;
@@ -1176,28 +1220,41 @@ class ApiService {
   }
 
   // Send Transaction
-  // Backend POST /send requires: {from, target, amount (LOS int), signature, public_key}
+  // Backend POST /send requires all fields for mainnet client-signed blocks:
+  // {from, target, amount, amount_cil, signature, public_key, previous, work, timestamp, fee}
   Future<Map<String, dynamic>> sendTransaction({
     required String from,
     required String to,
     required int amount,
     required String signature,
     required String publicKey,
+    String? previous,
+    int? work,
+    int? timestamp,
+    int? fee,
+    int? amountCil,
   }) async {
     losLog(
         '🌐 [ApiService.sendTransaction] from: $from, to: $to, amount: $amount');
     try {
+      final body = <String, dynamic>{
+        'from': from,
+        'target': to,
+        'amount': amount,
+        'signature': signature,
+        'public_key': publicKey,
+      };
+      if (previous != null) body['previous'] = previous;
+      if (work != null) body['work'] = work;
+      if (timestamp != null) body['timestamp'] = timestamp;
+      if (fee != null) body['fee'] = fee;
+      if (amountCil != null) body['amount_cil'] = amountCil;
+
       final response = await _requestWithFailover(
         (url) => _clientFor(url).post(
           Uri.parse('$url/send'),
           headers: {'Content-Type': 'application/json'},
-          body: json.encode({
-            'from': from,
-            'target': to,
-            'amount': amount,
-            'signature': signature,
-            'public_key': publicKey,
-          }),
+          body: json.encode(body),
         ),
         '/send',
       );
@@ -1210,7 +1267,7 @@ class ApiService {
       }
 
       losLog(
-          '🌐 [ApiService.sendTransaction] Success: txid=${data['txid'] ?? data['tx_id'] ?? 'N/A'}');
+          '🌐 [ApiService.sendTransaction] Success: txid=${data['tx_hash'] ?? data['txid'] ?? 'N/A'}');
       return data;
     } catch (e) {
       losLog('❌ sendTransaction error: $e');
@@ -1488,9 +1545,8 @@ class ApiService {
             }
 
             // Skip P2P-only addresses (port 4xxx = libp2p gossip)
-            final rawPort = host.contains(':')
-                ? int.tryParse(host.split(':').last)
-                : null;
+            final rawPort =
+                host.contains(':') ? int.tryParse(host.split(':').last) : null;
             if (rawPort != null && rawPort >= 4000 && rawPort < 5000) {
               losLog('🚫 Skipping P2P-only address: $host');
               continue;
@@ -1776,8 +1832,15 @@ class ApiService {
       );
       if (response.statusCode >= 200 && response.statusCode < 300) {
         final data = json.decode(response.body);
+        // Backend returns {"transactions": [...]} (Map) or bare [...] (List)
+        List? txList;
         if (data is List) {
-          return data
+          txList = data;
+        } else if (data is Map) {
+          txList = data['transactions'] as List? ?? data['history'] as List?;
+        }
+        if (txList != null) {
+          return txList
               .map((tx) => Transaction.fromJson(tx as Map<String, dynamic>))
               .toList();
         }

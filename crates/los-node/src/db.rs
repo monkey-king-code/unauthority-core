@@ -273,6 +273,12 @@ impl LosDatabase {
                     b"accumulated_fees_cil".as_ref(),
                     &ledger.accumulated_fees_cil.to_le_bytes() as &[u8],
                 )?;
+                // Persist total_slashed_cil — without this, supply audit breaks after restart
+                // because the invariant includes slashed CIL in the accounting equation.
+                tx_meta.insert(
+                    b"total_slashed_cil".as_ref(),
+                    &ledger.total_slashed_cil.to_le_bytes() as &[u8],
+                )?;
                 Ok(())
             })
             .map_err(|e: sled::transaction::TransactionError<()>| {
@@ -339,6 +345,18 @@ impl LosDatabase {
                 let mut buf = [0u8; 16];
                 buf.copy_from_slice(&fee_bytes[..16]);
                 ledger.accumulated_fees_cil = u128::from_le_bytes(buf);
+            }
+        }
+
+        // Restore total_slashed_cil from persistent storage
+        if let Some(slash_bytes) = meta_tree
+            .get(b"total_slashed_cil")
+            .map_err(|e| format!("Failed to read total_slashed_cil: {}", e))?
+        {
+            if slash_bytes.len() >= 16 {
+                let mut buf = [0u8; 16];
+                buf.copy_from_slice(&slash_bytes[..16]);
+                ledger.total_slashed_cil = u128::from_le_bytes(buf);
             }
         }
 

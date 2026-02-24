@@ -393,9 +393,9 @@ mod tests {
     #[test]
     fn test_voting_power_calculation() {
         // 1 LOS = MIN_STAKE = 100_000_000_000 CIL
-        let power = calculate_voting_power(1 * LOS);
+        let power = calculate_voting_power(LOS);
         // Linear: power = stake in CIL
-        assert_eq!(power, 1 * LOS);
+        assert_eq!(power, LOS);
 
         // 1000 LOS
         let power = calculate_voting_power(1000 * LOS);

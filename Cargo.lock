@@ -1550,7 +1550,7 @@ dependencies = [
 
 [[package]]
 name = "genesis"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "bip39",
  "chrono",
@@ -2833,7 +2833,7 @@ checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
 name = "los-cli"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "base64 0.22.1",
  "blake3",
@@ -2852,7 +2852,7 @@ dependencies = [
 
 [[package]]
 name = "los-consensus"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "bincode",
  "serde",
@@ -2864,7 +2864,7 @@ dependencies = [
 
 [[package]]
 name = "los-core"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "hex",
  "los-crypto",
@@ -2877,7 +2877,7 @@ dependencies = [
 
 [[package]]
 name = "los-crypto"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "age",
  "blake2",
@@ -2897,7 +2897,7 @@ dependencies = [
 
 [[package]]
 name = "los-network"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "chacha20poly1305",
  "futures",
@@ -2915,7 +2915,7 @@ dependencies = [
 
 [[package]]
 name = "los-node"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "base64 0.22.1",
  "bip39",
@@ -2948,11 +2948,11 @@ dependencies = [
 
 [[package]]
 name = "los-sdk"
-version = "2.0.1"
+version = "2.1.0"
 
 [[package]]
 name = "los-vm"
-version = "2.0.1"
+version = "2.1.0"
 dependencies = [
  "blake3",
  "chrono",

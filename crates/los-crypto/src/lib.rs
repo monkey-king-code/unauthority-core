@@ -361,7 +361,7 @@ pub fn address_to_pubkey_hash(address: &str) -> Option<Vec<u8>> {
 /// Encrypt private key with password using age encryption
 ///
 /// Security: Uses age's built-in scrypt key derivation (N=2^20, secure)
-/// Format: age encrypted binary (portable, battle-tested)
+/// Format: age encrypted binary (portable, audited standard)
 ///
 /// # Arguments
 /// * `secret_key` - Raw private key bytes (will be zeroized after encryption)

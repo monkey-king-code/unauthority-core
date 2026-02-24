@@ -87,17 +87,16 @@ const TOTAL_SUPPLY_CIL: u128 = TOTAL_SUPPLY_LOS * CIL_PER_LOS;
 /// MAINNET: Faucet endpoint is disabled on mainnet builds — this value is never used.
 const FAUCET_AMOUNT_CIL: u128 = 5_000 * CIL_PER_LOS;
 
-mod db; // NEW: Database module (sled)
+mod db; // Sled database persistence
 mod genesis;
-mod grpc_server; // NEW: gRPC server module
-mod mempool; // NEW: Mempool for transaction management
-mod metrics; // NEW: Prometheus metrics module
-mod rate_limiter; // NEW: Rate limiter module
+mod grpc_server;
+mod mempool; // Transaction mempool
+mod metrics; // Prometheus metrics
+mod rate_limiter; // Anti-spam rate limiter
 mod testnet_config;
 mod tor_service; // Automatic Tor Hidden Service generation
 mod validator_api; // Validator key management (generate, import)
-mod validator_rewards; // Testnet configuration module (graduated levels)
-                       // --- TAMBAHAN: HTTP API MODULE ---
+mod validator_rewards;
 use db::LosDatabase;
 use metrics::LosMetrics;
 use warp::Filter;
@@ -1246,6 +1245,18 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                 let link = format!("DEPLOY:{}", code_hash);
                 let amount_cil = req.amount_cil.unwrap_or(0);
                 let is_client_signed = req.signature.is_some() && req.public_key.is_some();
+
+                // MAINNET GUARD: Server-signed deploys are disabled on mainnet.
+                // All contract deployments on mainnet MUST be client-signed (with signature + public_key).
+                // This prevents the node from deploying contracts with its own key on behalf of anonymous callers.
+                if los_core::is_mainnet_build() && !is_client_signed {
+                    return api_json(serde_json::json!({
+                        "status": "error",
+                        "code": 403,
+                        "msg": "Server-signed contract deployment is disabled on mainnet. Provide signature and public_key."
+                    }));
+                }
+
                 let fee = req.fee.unwrap_or(los_core::MIN_DEPLOY_FEE_CIL);
                 let now_ts = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -1385,6 +1396,18 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                     (gas_limit as u128).saturating_mul(los_core::GAS_PRICE_CIL)
                 ));
                 let is_client_signed = req.signature.is_some() && req.public_key.is_some();
+
+                // MAINNET GUARD: Server-signed contract calls are disabled on mainnet.
+                // All contract calls on mainnet MUST be client-signed (with signature + public_key).
+                // This prevents the node from signing transactions on behalf of anonymous callers.
+                if los_core::is_mainnet_build() && !is_client_signed {
+                    return api_json(serde_json::json!({
+                        "status": "error",
+                        "code": 403,
+                        "msg": "Server-signed contract calls are disabled on mainnet. Provide signature and public_key."
+                    }));
+                }
+
                 let now_ts = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
@@ -1481,6 +1504,26 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                     let _ = db.save_contracts(&vm_data);
                 }
 
+                // CRITICAL: Credit recipients from contract transfers.
+                // host_transfer() already decremented the contract's balance in the VM.
+                // Without this, transferred CIL is burned (never credited to recipients).
+                if !exec_result.transfers.is_empty() {
+                    let mut l_guard = safe_lock(&l);
+                    for (recipient, amount) in &exec_result.transfers {
+                        if let Some(recv_acc) = l_guard.accounts.get_mut(recipient) {
+                            recv_acc.balance = recv_acc.balance.saturating_add(*amount);
+                        } else {
+                            // Create new account if recipient doesn't exist yet
+                            l_guard.accounts.insert(recipient.clone(), los_core::AccountState {
+                                head: "0".to_string(),
+                                balance: *amount,
+                                block_count: 0,
+                                is_validator: false,
+                            });
+                        }
+                    }
+                }
+
                 // Gossip to peers
                 let block_b64 = base64::engine::general_purpose::STANDARD.encode(
                     serde_json::to_vec(&block).unwrap_or_default()
@@ -1499,7 +1542,10 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                         "output": exec_result.output,
                         "gas_used": exec_result.gas_used,
                         "state_changes": exec_result.state_changes,
-                        "events": exec_result.events
+                        "events": exec_result.events,
+                        "transfers": exec_result.transfers.iter()
+                            .map(|(addr, amt)| serde_json::json!({"recipient": addr, "amount_cil": amt}))
+                            .collect::<Vec<_>>()
                     },
                     "fee_cil": fee,
                     "caller": account
@@ -1777,6 +1823,17 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                     "los-testnet"
                 };
 
+                // Calculate TPS from blocks in the last 60 seconds
+                let now_ts = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let window_secs: u64 = 60;
+                let recent_tx_count = l_guard.blocks.values()
+                    .filter(|b| b.timestamp > now_ts.saturating_sub(window_secs))
+                    .count() as u64;
+                let network_tps = if window_secs > 0 { recent_tx_count / window_secs } else { 0 };
+
                 api_json(serde_json::json!({
                     "chain_id": network,
                     "network": network,
@@ -1787,7 +1844,7 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                     "peer_count": peer_count,
                     "total_supply": format_balance_precise(total_supply),
                     "circulating_supply": format_balance_precise(circulating),
-                    "network_tps": 0,
+                    "network_tps": network_tps,
                     "protocol": {
                         "base_fee_cil": los_core::BASE_FEE_CIL,
                         "pow_difficulty_bits": los_core::MIN_POW_DIFFICULTY_BITS,
@@ -1998,7 +2055,7 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
     // See: background_mining_thread() for the integrated mining loop.
     // ──────────────────────────────────────────────────────────────────
 
-    // 14. GET /block (Latest block) — FIX: added path::end() to prevent stealing /block/{hash}
+    // 14. GET /block (Latest block) — path::end() prevents /block/{hash} route conflict
     let l_block = ledger.clone();
     let block_route = warp::path("block")
         .and(warp::path::end())
@@ -2196,23 +2253,33 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
             // Sort by timestamp descending for deterministic recent blocks
             let mut block_list: Vec<(&String, &Block)> = l_guard.blocks.iter().collect();
             block_list.sort_by(|a, b| b.1.timestamp.cmp(&a.1.timestamp));
+            let total_blocks = l_guard.blocks.len();
             let blocks: Vec<serde_json::Value> = block_list
                 .iter()
                 .take(10) // Last 10 blocks by timestamp
-                .map(|(hash, b)| {
+                .enumerate()
+                .map(|(i, (hash, b))| {
+                    // Per-account block count as individual height (block-lattice = per-account chain)
+                    let account_block_count = l_guard.accounts
+                        .get(&b.account)
+                        .map(|a| a.block_count)
+                        .unwrap_or(0);
                     serde_json::json!({
                         "hash": hash,
-                        "height": l_guard.blocks.len(),
+                        "height": account_block_count,
+                        "global_index": total_blocks - i,
                         "timestamp": b.timestamp,
                         "transactions_count": 1,
                         "account": b.account,
-                        "amount": b.amount / CIL_PER_LOS,
+                        "amount": b.amount,
+                        "amount_los": b.amount / CIL_PER_LOS,
                         "block_type": format!("{:?}", b.block_type).to_lowercase()
                     })
                 })
                 .collect();
             api_json(serde_json::json!({
-                "blocks": blocks
+                "blocks": blocks,
+                "total_blocks": total_blocks
             }))
         });
 
@@ -2649,7 +2716,8 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
     };
 
     // 26. GET /sync (HTTP-based state sync for Tor peers)
-    // Returns GZIP-compressed ledger state for peers that connect via HTTP
+    // Returns JSON ledger state for peers that connect via HTTP.
+    // P2P gossip uses SYNC_GZIP (base64-encoded gzip) for peer-to-peer sync.
     let l_sync = ledger.clone();
     let sync_route = warp::path("sync")
         .and(warp::query::<std::collections::HashMap<String, String>>())
@@ -2729,7 +2797,7 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                         "signature_scheme": "Dilithium5 (post-quantum)"
                     },
                     "finality": {
-                        "target_ms": 10000,
+                        "target_ms": 3000,
                         "blocks_finalized": stats.blocks_finalized,
                         "current_view": stats.current_view,
                         "current_sequence": stats.current_sequence
@@ -2916,41 +2984,44 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                 }));
             }
 
-            // 5. Check balance >= MIN_VALIDATOR_REGISTER_CIL (1 LOS)
-            let (balance, already_validator) = {
-                let l_guard = safe_lock(&l);
-                match l_guard.accounts.get(&address) {
-                    Some(acc) => (acc.balance, acc.is_validator),
-                    None => (0, false),
+            // 5. Check balance & register atomically (single lock scope prevents TOCTOU race)
+            let reg_result = {
+                let mut l_guard = safe_lock(&l);
+                match l_guard.accounts.get_mut(&address) {
+                    Some(acc) => {
+                        if acc.is_validator || bv_inner.contains(&address) {
+                            Err("already_validator")
+                        } else if acc.balance < MIN_VALIDATOR_REGISTER_CIL {
+                            Err("insufficient_stake")
+                        } else {
+                            // 6. Set is_validator = true atomically with the check
+                            acc.is_validator = true;
+                            Ok(acc.balance)
+                        }
+                    }
+                    None => Err("insufficient_stake"), // balance = 0
                 }
             };
 
-            if already_validator || bv_inner.contains(&address) {
-                return api_json(serde_json::json!({
-                    "status": "ok",
-                    "msg": "Already registered as validator",
-                    "address": address,
-                    "is_validator": true,
-                    "is_genesis": bv_inner.contains(&address),
-                }));
-            }
-
-            if balance < MIN_VALIDATOR_REGISTER_CIL {
-                let min_los = MIN_VALIDATOR_REGISTER_CIL / CIL_PER_LOS;
-                let current_los = balance / CIL_PER_LOS;
-                return api_json(serde_json::json!({
-                    "status": "error",
-                    "msg": format!("Insufficient stake: need {} LOS, have {} LOS", min_los, current_los)
-                }));
-            }
-
-            // 6. Set is_validator = true in ledger
-            {
-                let mut l_guard = safe_lock(&l);
-                if let Some(acc) = l_guard.accounts.get_mut(&address) {
-                    acc.is_validator = true;
+            let balance = match reg_result {
+                Err("already_validator") => {
+                    return api_json(serde_json::json!({
+                        "status": "ok",
+                        "msg": "Already registered as validator",
+                        "address": address,
+                        "is_validator": true,
+                        "is_genesis": bv_inner.contains(&address),
+                    }));
                 }
-            }
+                Err(_) => {
+                    let min_los = MIN_VALIDATOR_REGISTER_CIL / CIL_PER_LOS;
+                    return api_json(serde_json::json!({
+                        "status": "error",
+                        "msg": format!("Insufficient stake: need {} LOS, have 0 LOS", min_los)
+                    }));
+                }
+                Ok(balance) => balance,
+            };
 
             // 7. Register in SlashingManager
             {
@@ -3307,8 +3378,8 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                 Arc<Mutex<HashMap<String, String>>>,
                 Arc<Mutex<Ledger>>,
             )| {
-                // DEADLOCK FIX: Lock order MUST be ab → ve → l (same as /peers route).
-                // Previously was ve → ab → l which caused ABBA deadlock with /peers.
+                // Lock order MUST be ab → ve → l (same as /peers route).
+                // Inconsistent ordering causes ABBA deadlock.
                 let ab_guard = safe_lock(&ab);
                 let ve_guard = safe_lock(&ve);
                 let l_guard = safe_lock(&l);
@@ -4114,7 +4185,7 @@ fn save_to_disk_legacy(ledger: &Ledger) {
     }
 }
 
-// NEW: Database-based save (ACID-compliant) with race condition protection
+// Database-based save (ACID-compliant) with race condition protection
 #[allow(dead_code)]
 fn save_to_disk(ledger: &Ledger, db: &LosDatabase) {
     save_to_disk_internal(ledger, db, false);
@@ -4146,7 +4217,7 @@ fn save_to_disk_internal(ledger: &Ledger, db: &LosDatabase, force: bool) {
     SAVE_DIRTY.store(false, Ordering::Release);
 }
 
-// NEW: Load from database with JSON migration
+// Load from database with JSON migration fallback
 fn load_from_disk(db: &LosDatabase) -> Ledger {
     // Try loading from database first
     if !db.is_empty() {
@@ -4338,7 +4409,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("❌ PANIC in spawned task: {}", panic_info);
     }));
 
-    // --- 1. LOGIKA PORT DINAMIS ---
+    // --- Dynamic port assignment ---
     // Parse command line arguments
     let args: Vec<String> = std::env::args().collect();
 
@@ -4476,7 +4547,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
     }
 
-    // --- NEW: INITIALIZE DATABASE ---
+    // --- Initialize database ---
     println!("🗄️  Initializing database...");
     // AUTO-DETECT NODE ID from override, env var, or port
     // TESTNET ONLY: Port-to-name mapping is a development convenience.
@@ -4543,7 +4614,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // --- NEW: INITIALIZE METRICS ---
+    // --- Initialize Prometheus metrics ---
     println!("📊 Initializing Prometheus metrics...");
     let metrics = match LosMetrics::new() {
         Ok(m) => {
@@ -5141,12 +5212,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 1 successful mint per address per epoch. Reward halves periodically.
     let mining_state = Arc::new(Mutex::new(MiningState::new(genesis_ts)));
     {
-        let ms = safe_lock(&mining_state);
+        let mut ms = safe_lock(&mining_state);
         let now_secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
         let current_epoch = ms.epoch_from_time(now_secs);
+
+        // Rebuild current_epoch_miners from persisted ledger.
+        // Without this, a node restart within the same epoch allows double-mining
+        // because the in-memory dedup set starts empty.
+        {
+            let l = safe_lock(&ledger);
+            let epoch_prefix = format!("MINE:{}:", current_epoch);
+            for block in l.blocks.values() {
+                if block.block_type == BlockType::Mint
+                    && block.link.starts_with(&epoch_prefix)
+                {
+                    ms.current_epoch_miners.insert(block.account.clone());
+                }
+            }
+            if !ms.current_epoch_miners.is_empty() {
+                println!(
+                    "⛏️  Rebuilt epoch {} miners from ledger: {} addresses",
+                    current_epoch,
+                    ms.current_epoch_miners.len()
+                );
+            }
+        }
+        // Sync the epoch number in mining state
+        ms.current_epoch = current_epoch;
+
         let epoch_reward = MiningState::epoch_reward_cil(current_epoch) / CIL_PER_LOS;
         println!(
             "⛏️  PoW Mint engine: epoch {}, difficulty {} bits, reward ~{} LOS/epoch",
@@ -5161,7 +5257,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // NEW: Slashing Manager (validator accountability)
+    // Slashing Manager (validator accountability)
     let slashing_manager = Arc::new(Mutex::new(SlashingManager::new()));
     // Register existing validators from genesis (only accounts with is_validator flag)
     {
@@ -5181,7 +5277,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // NEW: Finality Checkpoint Manager (prevents long-range attacks)
+    // Finality Checkpoint Manager (prevents long-range attacks)
     // Use --data-dir path, NOT hardcoded node_data/{node_id}/.
     // The old path was shared across all flutter-validator instances regardless
     // of --data-dir, causing lock conflicts from zombie (UE) processes.
@@ -5298,6 +5394,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
         }
+    }
+
+    // SAFETY: Set env vars BEFORE any tokio::spawn to avoid data races.
+    // Rust 1.83+ marks set_var as unsafe in multi-threaded contexts.
+    // Must happen before background tasks are spawned below.
+    if std::env::var("LOS_P2P_PORT").is_err() {
+        let p2p_port = api_port + 1000;
+        unsafe { std::env::set_var("LOS_P2P_PORT", p2p_port.to_string()); }
+        println!(
+            "📡 P2P port auto-derived: {} (API {} + 1000)",
+            p2p_port, api_port
+        );
     }
 
     // Background task for debounced disk saves (prevents race conditions)
@@ -5436,6 +5544,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Periodic cleanup of stale pending transactions
     // Pending sends older than 5 minutes are removed to prevent memory leaks
     let cleanup_pending_sends = Arc::clone(&pending_sends);
+    let cleanup_send_voters = Arc::clone(&send_voters);
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(60));
         loop {
@@ -5446,15 +5555,58 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .as_secs();
             const PENDING_TTL_SECS: u64 = 300; // 5 minute TTL for pending transactions
 
-            // Clean stale pending sends
+            // Clean stale pending sends AND their corresponding vote trackers.
+            // Without cleaning send_voters, entries for timed-out txs leak memory forever.
             if let Ok(mut ps) = cleanup_pending_sends.lock() {
                 let before = ps.len();
+                // Collect hashes of stale entries BEFORE removing them
+                let stale_hashes: Vec<String> = ps
+                    .iter()
+                    .filter(|(_, (block, _))| now.saturating_sub(block.timestamp) >= PENDING_TTL_SECS)
+                    .map(|(hash, _)| hash.clone())
+                    .collect();
                 ps.retain(|_, (block, _)| now.saturating_sub(block.timestamp) < PENDING_TTL_SECS);
                 let removed = before - ps.len();
                 if removed > 0 {
+                    // Also clean the vote tracker for these stale transactions
+                    if let Ok(mut sv) = cleanup_send_voters.lock() {
+                        for hash in &stale_hashes {
+                            sv.remove(hash);
+                        }
+                    }
                     println!(
-                        "🧹 Cleaned {} stale pending sends (TTL: {}s)",
+                        "🧹 Cleaned {} stale pending sends + vote trackers (TTL: {}s)",
                         removed, PENDING_TTL_SECS
+                    );
+                }
+            }
+        }
+    });
+
+    // Periodic cleanup of stale pending checkpoints
+    // Prevents unbounded memory growth if checkpoints never reach quorum
+    let gc_pending_cp = Arc::clone(&pending_checkpoints);
+    let gc_checkpoint_mgr = Arc::clone(&checkpoint_manager);
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(120));
+        loop {
+            interval.tick().await;
+            let latest_finalized = {
+                let cm = safe_lock(&gc_checkpoint_mgr);
+                cm.latest_finalized_height()
+            };
+            // Remove pending checkpoints that are far behind the latest finalized height.
+            // Anything more than 2× CHECKPOINT_INTERVAL behind is certainly stale.
+            let cutoff = latest_finalized.saturating_sub(CHECKPOINT_INTERVAL * 2);
+            if cutoff > 0 {
+                let mut pcp = safe_lock(&gc_pending_cp);
+                let before = pcp.len();
+                pcp.retain(|height, _| *height > cutoff);
+                let removed = before - pcp.len();
+                if removed > 0 {
+                    println!(
+                        "🧹 GC: Removed {} stale pending checkpoints (cutoff height: {})",
+                        removed, cutoff
                     );
                 }
             }
@@ -5489,19 +5641,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // Dynamic P2P port: API port + 1000 (e.g. 3030→4030, 3031→4031)
-    // Can still be overridden via LOS_P2P_PORT env var.
-    if std::env::var("LOS_P2P_PORT").is_err() {
-        let p2p_port = api_port + 1000;
-        // SAFETY: Called during single-threaded init before tokio runtime spawns threads.
-        // Rust 1.83+ marks set_var as unsafe in multi-threaded contexts.
-        unsafe { std::env::set_var("LOS_P2P_PORT", p2p_port.to_string()); }
-        println!(
-            "📡 P2P port auto-derived: {} (API {} + 1000)",
-            p2p_port, api_port
-        );
-    }
-
     // =========================================================================
     // AUTOMATIC TOR HIDDEN SERVICE GENERATION (OPTIONAL)
     // =========================================================================
@@ -5528,7 +5667,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             match tor_service::ensure_hidden_service(&tor_config).await {
                 Ok(hs) => {
                     // Set env vars so TorConfig::from_env() picks it up in LosNode::start()
-                    // SAFETY: Called during single-threaded init before tokio spawns workers
+                    // SAFETY: Background tasks above do NOT read these env vars.
+                    // Only LosNode::start() (called later) reads them. Wrapped in
+                    // unsafe per Rust 1.83+ requirement for multi-threaded set_var.
                     unsafe {
                         std::env::set_var("LOS_ONION_ADDRESS", &hs.onion_address);
                         std::env::set_var("LOS_HOST_ADDRESS", &hs.onion_address);
@@ -5592,7 +5733,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // --- TAMBAHAN: JALANKAN HTTP API ---
+    // --- Start HTTP API server ---
     let api_ledger = Arc::clone(&ledger);
     let api_tx = tx_out.clone();
     let api_pending_sends = Arc::clone(&pending_sends);
@@ -5668,7 +5809,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await;
     });
 
-    // --- NEW: JALANKAN gRPC SERVER (PRODUCTION READY) ---
+    // --- Start gRPC server ---
     let grpc_ledger = Arc::clone(&ledger);
     let grpc_tx = tx_out.clone();
     let grpc_addr = my_address.clone();
@@ -5920,10 +6061,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             // Re-acquire pool lock for epoch check
-            // DEADLOCK FIX: Split epoch processing into phases to minimize lock hold time.
-            // Previously held reward_pool for ~280 lines including CPU-intensive PoW + signing,
-            // blocking ALL HTTP routes that touch ledger or reward_pool for seconds.
-            // NEW: Phase 1 (pool lock) → Phase 2 (no lock, CPU work) → Phase 3 (ledger lock, write)
+            // Split epoch processing into phases to minimize lock hold time.
+            // Holding reward_pool for the full ~280 lines including CPU-intensive PoW + signing
+            // blocks ALL HTTP routes that touch ledger or reward_pool for seconds.
+            // Phase 1 (pool lock) → Phase 2 (no lock, CPU work) → Phase 3 (ledger lock, write)
             let (gossip_queue, fee_gossip_queue) = {
                 // ═══════════════════════════════════════════════════════════════════
                 // PHASE 1: Epoch check + reward calculation (pool lock only, fast)
@@ -5940,7 +6081,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         // which differs per node on Tor → ALL nodes thought they were leader
                         // → conflicting reward blocks → chain divergence → blacklisting.
                         //
-                        // Fix: Use deterministic round-robin over the sorted registered
+                        // Deterministic round-robin over the sorted registered
                         // validator list. All nodes share the same pool.validators (registered
                         // at genesis), so they ALL agree on who the leader is.
                         // If the elected leader is offline, rewards for that epoch are simply
@@ -6258,12 +6399,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         continue;
                                     }
                                 }
-                                let supply_before = l.distribution.remaining_supply;
+                                // FEE_REWARD supply handling is now in process_block() itself.
+                                // No need for save/restore — process_block skips remaining_supply
+                                // deduction for FEE_REWARD: Mint blocks automatically.
                                 match l.process_block(fee_blk) {
                                     Ok(result) => {
                                         let hash = result.into_hash();
-                                        // Restore supply: fee rewards are redistribution, not new minting
-                                        l.distribution.remaining_supply = supply_before;
                                         total_fee_credited += fee_share;
                                         fee_gossip_queue.push(
                                             serde_json::to_string(fee_blk).unwrap_or_default(),
@@ -7085,25 +7226,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     });
                                                 }
 
-                                                // Save supply before process_block() for FEE_REWARD blocks.
-                                                // Fee rewards are redistribution of collected fees, NOT new minting.
-                                                // process_block() decrements remaining_supply for all Mint blocks,
-                                                // but fee rewards should not — they come from accumulated_fees_cil.
-                                                // Leader already handles this; non-leader must do the same.
-                                                let is_fee_reward = blk.block_type == BlockType::Mint
-                                                    && blk.link.starts_with("FEE_REWARD:EPOCH:");
-                                                let supply_before_fee = if is_fee_reward {
-                                                    Some(l.distribution.remaining_supply)
-                                                } else {
-                                                    None
-                                                };
+                                                // FEE_REWARD supply handling is now in process_block() itself.
+                                                // No need for save/restore — process_block skips remaining_supply
+                                                // deduction for FEE_REWARD: Mint blocks automatically.
 
                                                 match l.process_block(blk) {
                                                     Ok(_) => {
-                                                        // Restore supply for fee rewards
-                                                        if let Some(saved_supply) = supply_before_fee {
-                                                            l.distribution.remaining_supply = saved_supply;
-                                                        }
                                                         // Sync reward pool when receiving
                                                         // REWARD:EPOCH or FEE_REWARD:EPOCH Mint blocks from leader.
                                                         // This keeps non-leader pool stats consistent.
@@ -7114,7 +7242,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                             let mut pool = safe_lock(&rp_sync);
                                                             pool.sync_reward_from_gossip(&blk.account, blk.amount);
                                                         }
-                                                        // 🛡️ SLASHING INTEGRATION: Record participation during sync
+                                                        // SLASHING: Record participation during sync
                                                         {
                                                             let mut sm = safe_lock(&slashing_clone);
                                                             let timestamp = std::time::SystemTime::now()
@@ -7570,7 +7698,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             let mut l = safe_lock(&ledger);
                                             match l.process_block(&blk_to_finalize) {
                                                 Ok(_) => {
-                                                    // 🛡️ SLASHING INTEGRATION: Record finalization participation
+                                                    // SLASHING: Record finalization participation
                                                     {
                                                         let mut sm = safe_lock(&slashing_clone);
                                                         let timestamp = std::time::SystemTime::now()
@@ -8527,8 +8655,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         }
 
                                         // Also add the proposer's signature to our pending map
+                                        // SECURITY: Verify proposer's Dilithium5 signature first
                                         if let Ok(proposer_sig) = hex::decode(sig_hex) {
-                                            let mut pcp = safe_lock(&pending_checkpoints);
+                                            let proposer_pk: Option<Vec<u8>> = {
+                                                let l = safe_lock(&ledger);
+                                                l.accounts.get(proposer).and_then(|acc| {
+                                                    l.blocks.get(&acc.head).and_then(|blk| {
+                                                        hex::decode(&blk.public_key).ok()
+                                                    })
+                                                })
+                                            };
+
+                                            let proposer_verified = if let Some(pk_bytes) = proposer_pk {
+                                                let cp_verify = FinalityCheckpoint::new(
+                                                    height,
+                                                    block_hash.to_string(),
+                                                    1,
+                                                    state_root.to_string(),
+                                                    vec![],
+                                                );
+                                                los_crypto::verify_signature(&cp_verify.signing_data(), &proposer_sig, &pk_bytes)
+                                            } else {
+                                                false
+                                            };
+
+                                            if !proposer_verified {
+                                                println!("🚫 Rejected CHECKPOINT_PROPOSE: unverified proposer sig from {}", &proposer[..proposer.len().min(16)]);
+                                            } else {
+                                                let mut pcp = safe_lock(&pending_checkpoints);
                                             let pending = pcp.entry(height).or_insert_with(|| {
                                                 let vc = {
                                                     let l = safe_lock(&ledger);
@@ -8548,6 +8702,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 validator_address: proposer.to_string(),
                                                 signature: proposer_sig,
                                             });
+                                            } // end proposer_verified
                                         }
                                     } else {
                                         println!("⚠️ Checkpoint proposal state mismatch at height {} (ours={}, theirs={})",
@@ -8561,8 +8716,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let parts: Vec<&str> = rest.splitn(5, ':').collect();
                             if parts.len() == 5 {
                                 if let Ok(height) = parts[0].parse::<u64>() {
-                                    let _block_hash = parts[1];
-                                    let _state_root = parts[2];
+                                    let block_hash_cp = parts[1];
+                                    let state_root_cp = parts[2];
                                     let signer = parts[3];
                                     let sig_hex = parts[4];
 
@@ -8571,6 +8726,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
 
                                     if let Ok(sig_bytes) = hex::decode(sig_hex) {
+                                        // SECURITY: Verify the Dilithium5 signature before accepting.
+                                        // Without this, an attacker can forge signatures for any signer
+                                        // and reach quorum trivially — enabling checkpoint manipulation.
+                                        //
+                                        // Step 1: Look up signer's public key from their head block
+                                        let signer_pk: Option<Vec<u8>> = {
+                                            let l = safe_lock(&ledger);
+                                            l.accounts.get(signer).and_then(|acc| {
+                                                l.blocks.get(&acc.head).and_then(|blk| {
+                                                    hex::decode(&blk.public_key).ok()
+                                                })
+                                            })
+                                        };
+
+                                        let pk_bytes = match signer_pk {
+                                            Some(pk) => pk,
+                                            None => {
+                                                // Unknown signer (no blocks) — reject
+                                                println!("🚫 Rejected CHECKPOINT_SIGN: unknown signer {} (no blocks found)", &signer[..signer.len().min(16)]);
+                                                continue;
+                                            }
+                                        };
+
+                                        // Step 2: Verify the signature over the checkpoint signing data
+                                        let cp = FinalityCheckpoint::new(
+                                            height,
+                                            block_hash_cp.to_string(),
+                                            1,
+                                            state_root_cp.to_string(),
+                                            vec![],
+                                        );
+                                        let signing_data = cp.signing_data();
+                                        if !los_crypto::verify_signature(&signing_data, &sig_bytes, &pk_bytes) {
+                                            println!("🚫 Rejected CHECKPOINT_SIGN: invalid signature from {}", &signer[..signer.len().min(16)]);
+                                            continue;
+                                        }
+
                                         let mut pcp = safe_lock(&pending_checkpoints);
                                         if let Some(pending) = pcp.get_mut(&height) {
                                             let was_new = pending.add_signature(CheckpointSignature {
@@ -8822,7 +9014,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             }
 
-                            // 🛡️ SLASHING INTEGRATION: Check for double-signing before processing
+                            // SLASHING: Check for double-signing before processing
                             let timestamp = std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .unwrap_or_default()
@@ -8935,7 +9127,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 match l.process_block(&inc) {
                                     Ok(result) => {
                                         let block_hash = result.into_hash();
-                                        // 🛡️ SLASHING INTEGRATION: Record block participation for uptime tracking
+                                        // SLASHING: Record block participation for uptime tracking
                                         {
                                             let mut sm = safe_lock(&slashing_clone);
                                             let global_height = l.blocks.len() as u64;

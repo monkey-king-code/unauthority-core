@@ -94,6 +94,12 @@ pub struct ContractResult {
     /// Events emitted by the contract during execution
     #[serde(default)]
     pub events: Vec<ContractEvent>,
+    /// Transfers initiated by `host_transfer()` during execution.
+    /// Each entry is (recipient_address, amount_cil).
+    /// The contract's balance is already decremented — the caller MUST
+    /// credit these amounts to the recipient accounts in the ledger.
+    #[serde(default)]
+    pub transfers: Vec<(String, u128)>,
 }
 
 /// Contract event (emitted during execution, stored for indexing)
@@ -500,8 +506,15 @@ impl WasmEngine {
 
             let instance = match Instance::new(&mut store, &module, &import_object) {
                 Ok(i) => i,
-                Err(_) => {
-                    // Module may not import "env" at all — retry with empty imports
+                Err(first_err) => {
+                    // Module may not import "env" at all — retry with empty imports.
+                    // WARNING: This means NO host functions (transfer, log, storage, etc.)
+                    // are available. Only pure-compute WASM modules should reach this path.
+                    eprintln!(
+                        "⚠️ VM: WASM module instantiation with host imports failed ({}). \
+                         Retrying with empty imports (no host functions available).",
+                        first_err
+                    );
                     match Instance::new(&mut store, &module, &imports! {}) {
                         Ok(i) => i,
                         Err(e) => {
@@ -771,6 +784,7 @@ impl WasmEngine {
                         .map(|(k, v)| (k.clone(), String::from_utf8_lossy(v).to_string()))
                         .collect(),
                     events: exec_result.events,
+                    transfers: exec_result.transfers,
                 }))
             }
             Err(e)
@@ -829,6 +843,7 @@ impl WasmEngine {
                                 gas_used,
                                 state_changes: BTreeMap::new(),
                                 events: Vec::new(),
+                                transfers: Vec::new(),
                             });
                         }
                         Err(e)
@@ -951,6 +966,7 @@ impl WasmEngine {
                 gas_used,
                 state_changes,
                 events: Vec::new(),
+                transfers: Vec::new(),
             })
         } // end #[cfg(not(feature = "mainnet"))]
     }
@@ -1339,6 +1355,7 @@ mod tests {
             gas_used: 100,
             state_changes: BTreeMap::new(),
             events: Vec::new(),
+            transfers: Vec::new(),
         };
 
         let json = serde_json::to_string(&result).unwrap();

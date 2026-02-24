@@ -203,6 +203,7 @@ pub struct ABFTConsensus {
 impl ABFTConsensus {
     /// Create new aBFT consensus engine
     pub fn new(validator_id: String, total_validators: usize) -> Self {
+        let total_validators = total_validators.max(1);
         let f_max_faulty = (total_validators - 1) / 3;
 
         Self {

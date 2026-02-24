@@ -6,6 +6,45 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [2.1.0] — 2026-02-25
+
+> **Scope:** Full mainnet audit release — all Rust crates + Flutter apps bumped to v2.1.0.
+
+### Changed
+
+- **Version bumped to 2.1.0** across all 10 Rust crates, both Flutter apps, all docs, README badges, build scripts, and download links.
+- **Comprehensive code comment audit** — Removed 24 non-technical comments (AI language, Indonesian text, emoji prefixes, filler words) across 5 Rust source files. All comments now explain logic/function only.
+- **Non-public scripts moved** — `_audit_scan.py`, `audit_clean_mainnet.sh`, `build_dmg.sh`, `test_bundled_tor.sh` moved to `dev_docs/` (gitignored).
+- **New documentation:**
+  - `docs/WHITEPAPER.md` — Comprehensive 17-section technical whitepaper (~680 lines) with code proofs and mathematical supply verification.
+  - `docs/WHY_UNAUTHORITY.md` — 13-section proof document (~420 lines) demonstrating speed, security, determinism, and fair distribution with source code references.
+  - `docs/MINING_GUIDE.md` — Miner acquisition guide (~280 lines) with halving tables, difficulty explanation, and quick start.
+
+### Fixed
+
+- **Flutter Validator `sendTransaction` broken** — Was constructing a local-only `Block` struct and never submitting to the API. Now correctly uses `BlockConstructionService` to build and submit via `POST /send`.
+- **Flutter Validator missing `BlockConstructionService`** — Created new service for server-side block construction (signing_hash, PoW, Dilithium5 signing via FFI).
+- **Flutter Validator `getHistory` always empty** — Was calling `GET /account/{address}` (returns balance, not history). Fixed to call `GET /history/{address}`.
+- **Flutter Validator mainnet localhost priority** — `getApiBaseUrl()` tried localhost:3030 first, defeating the purpose of external peer discovery. Fixed to prioritize `/peers` discovery, use external peers only.
+- **Flutter Validator local fallback POST bug** — `_tryLocalFallback()` used `POST /account/{address}` instead of `GET`. Fixed to GET.
+- **Flutter Validator `isMainnet` was compile-time** — `const isMainnet` baked in at build. Changed to runtime network config detection.
+- **Flutter Wallet/Validator missing `Account` fields** — Added `representative`, `modified_timestamp`, `block_count`, `frontier` to match API response.
+- **Flutter Wallet missing `getFeeEstimate`** — Had `estimateFee()` returning hardcoded value. Added proper `GET /fee-estimate` API call.
+- **Rust test `test_validator_rewards_epoch`** — Was using `is_genesis=true`, making test meaningless (genesis always ineligible). Fixed to `is_genesis=false`.
+- **Rust `_balance` variable scoping** — `Ok(balance) => balance` in validator registration was shadowed. Fixed to `Ok(bal) => bal`.
+
+### Audited (0 issues remaining)
+
+- **0 `TODO` / `FIXME` / `HACK`** in production code
+- **0 `unimplemented!()` / `todo!()`** in production code
+- **0 `unwrap()` / `.expect()`** in production code (all in `#[test]` only)
+- **0 `f32` / `f64`** in consensus/financial logic (3 display-only + 1 `#[cfg(not(feature = "mainnet"))]`)
+- **0 warnings** on `cargo build --release`
+- **320 tests passed, 0 failed**
+- **Flutter analyze: 0 errors, 0 warnings** (both apps)
+
+---
+
 ## [2.0.2] — 2026-02-24
 
 > **Scope:** Flutter apps only (`flutter_wallet`, `flutter_validator`). Rust crates remain at v2.0.1.
@@ -275,6 +314,7 @@ Pre-mainnet testing release deployed on the live Tor network.
 
 ---
 
+[2.1.0]: https://github.com/monkey-king-code/unauthority-core/releases/tag/v2.1.0
 [2.0.2]: https://github.com/monkey-king-code/unauthority-core/releases/tag/v2.0.2
 [2.0.1]: https://github.com/monkey-king-code/unauthority-core/releases/tag/v2.0.1
 [2.0.0]: https://github.com/monkey-king-code/unauthority-core/releases/tag/v2.0.0

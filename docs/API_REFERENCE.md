@@ -1,4 +1,4 @@
-# API Reference — Unauthority (LOS) v2.0.1
+# API Reference — Unauthority (LOS) v2.1.0
 
 Complete REST API and gRPC API documentation for the `los-node` validator binary.
 
@@ -54,7 +54,7 @@ Node status overview with all available endpoints.
 ```json
 {
   "name": "Unauthority (LOS) Blockchain API",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "network": "mainnet",
   "status": "operational",
   "description": "Decentralized blockchain with aBFT consensus",
@@ -76,7 +76,7 @@ Health check for monitoring and load balancing.
 ```json
 {
   "status": "healthy",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "timestamp": 1771277598,
   "uptime_seconds": 86400,
   "chain": {
@@ -100,7 +100,7 @@ Detailed node information.
 ```json
 {
   "node_id": "validator-1",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "address": "LOSX7dStdPkS9U4MFCmDQfpmvrbMa5WAZfQX1",
   "block_count": 42,
   "account_count": 8,

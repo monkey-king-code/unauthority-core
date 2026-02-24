@@ -1,6 +1,6 @@
 [package]
 name = "los-sdk"
-version = "2.0.1"
+version = "2.1.0"
 edition = "2021"
 description = "Smart contract SDK for the Unauthority (LOS) blockchain"
 license = "AGPL-3.0-only"
