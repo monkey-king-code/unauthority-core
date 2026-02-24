@@ -1,26 +1,24 @@
-fix: zero-defect audit - eliminate all panics, unsafe env, dangling pointers
+fix: USP-01 silent money bug + genesis text + build.rs + Tor docs
 
-Fixes applied across 7 files:
+usp01.rs (CRITICAL - 8 instances):
+- checked_sub().unwrap_or(0) -> match with error return
+  (was silently destroying tokens on underflow)
+- checked_add().unwrap_or(u128::MAX) -> match with error return
+  (was silently creating infinite balance on overflow)
+- Affects: Transfer, TransferFrom, Burn, WrapMint, WrapBurn
 
-CLI (los-cli/src/main.rs):
-- Banner version: hardcoded v0.1.0 -> env!(CARGO_PKG_VERSION) dynamic
-- Utility functions: restore pub(crate) visibility (used by command submodules)
+genesis/src/main.rs:
+- "balance >= 1000 LOS" -> "registers with >= 1 LOS (rewards >= 1000 LOS)"
+  (spec: MIN_VALIDATOR_REGISTER_CIL = 1 LOS, not 1000)
 
-Node (los-node/src/main.rs):
-- --port parse: unwrap_or(3030) -> match with eprintln warning
-- --config port parse: same silent default -> match with warning
-- --mine-threads parse: unwrap_or(1) -> match with warning
-- send amount parse: unwrap_or(0) -> match with distinct error messages
-- std::env::set_var: all 3 calls wrapped in unsafe {} (Rust 1.83+)
+flutter_wallet/TOR_IMPLEMENTATION.md:
+- Remove hardcoded "Tor 0.4.8.22" version
+- Remove "macOS binary" platform assumption
+- Use runtime version check instead
 
-Tor (tor_service.rs, tor_transport.rs):
-- All set_var/remove_var in tests wrapped in unsafe {} blocks
-
-Example contracts (hello_world.rs, oracle_price_feed.rs, token.rs):
-- Dangling pointer: added std::mem::forget(output) before returning ptr
-- expect() panics: replaced with match + graceful error_response()
-- unwrap() calls: replaced with .ok() returning Option
-- token.rs get_state(): expect() -> auto-initialize empty state
+pqcrypto-internals-seeded/build.rs (3 copies):
+- unwrap() -> descriptive expect() messages
+- Root, flutter_wallet, flutter_validator copies all fixed
 
 Build: 0 warnings, 0 errors
 Tests: 282 passed, 0 failed, 4 ignored

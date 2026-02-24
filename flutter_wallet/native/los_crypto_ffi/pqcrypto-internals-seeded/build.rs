@@ -5,8 +5,10 @@ use std::env;
 use std::path::Path;
 
 fn main() {
-    let includepath = dunce::canonicalize(Path::new("include")).unwrap();
-    println!("cargo:includepath={}", includepath.to_str().unwrap());
+    let includepath = dunce::canonicalize(Path::new("include"))
+        .expect("Cannot find pqcrypto-internals-seeded/include/ directory — run from project root");
+    println!("cargo:includepath={}", includepath.to_str()
+        .expect("include path contains non-UTF8 characters"));
 
     let cfiledir = Path::new("cfiles");
     let common_files = vec![
@@ -23,7 +25,8 @@ fn main() {
 
     let mut build = cc::Build::new();
 
-    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap();
+    let target_os = env::var("CARGO_CFG_TARGET_OS")
+        .expect("CARGO_CFG_TARGET_OS not set — must be called from cargo build");
     if target_os == "wasi" {
         let wasi_sdk_path =
             &std::env::var("WASI_SDK_DIR").expect("missing environment variable: WASI_SDK_DIR");

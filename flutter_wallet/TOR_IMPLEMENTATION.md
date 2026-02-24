@@ -164,9 +164,9 @@ chmod +x flutter_wallet/tor/linux/tor
 ## 🔒 Security Notes
 
 ### Tor Binary Integrity
-- macOS binary sourced from the official Tor distribution
-- Version: Tor 0.4.8.22
-- Users can verify with: `tor --version`
+- Tor binary sourced from the official Tor Project distribution
+- Version verified at runtime via: `tor --version`
+- Users can independently verify the binary hash against torproject.org releases
 
 ### Data Directory
 - Bundled Tor stores data in: `~/Library/Application Support/flutter_wallet/tor_data`

@@ -187,7 +187,7 @@ fn main() {
     println!("   - Open Validator Dashboard");
     println!("   - Click 'Import Existing Keys'");
     println!("   - Paste seed phrase OR private key");
-    println!("   - Node will activate if balance >= 1000 LOS\n");
+    println!("   - Node registers as validator with >= 1 LOS (reward eligibility requires >= 1000 LOS)\n");
 
     generate_config(&wallets);
 

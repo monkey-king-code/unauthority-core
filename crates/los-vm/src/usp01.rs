@@ -479,15 +479,29 @@ impl Usp01Token {
                         events: Vec::new(),
                     };
                 }
-                // Debit sender (checked_sub for defense-in-depth)
+                // Debit sender (checked_sub — if this fails, logic bug in balance check above)
                 {
                     let bal = self.balances.entry(caller.to_string()).or_insert(0);
-                    *bal = bal.checked_sub(amount).unwrap_or(0);
+                    match bal.checked_sub(amount) {
+                        Some(v) => *bal = v,
+                        None => return Usp01Response {
+                            success: false, data: None,
+                            message: "Internal error: balance underflow after validation".to_string(),
+                            events: Vec::new(),
+                        },
+                    }
                 }
-                // Credit recipient (checked_add prevents u128 overflow)
+                // Credit recipient (checked_add — overflow = critical)
                 {
                     let bal = self.balances.entry(to.clone()).or_insert(0);
-                    *bal = bal.checked_add(amount).unwrap_or(u128::MAX);
+                    match bal.checked_add(amount) {
+                        Some(v) => *bal = v,
+                        None => return Usp01Response {
+                            success: false, data: None,
+                            message: "Internal error: recipient balance overflow".to_string(),
+                            events: Vec::new(),
+                        },
+                    }
                 }
 
                 Usp01Response {
@@ -543,23 +557,44 @@ impl Usp01Token {
                         events: Vec::new(),
                     };
                 }
-                // Debit (checked_sub for defense-in-depth)
+                // Debit (checked_sub — underflow = logic bug)
                 {
                     let bal = self.balances.entry(from.clone()).or_insert(0);
-                    *bal = bal.checked_sub(amount).unwrap_or(0);
+                    match bal.checked_sub(amount) {
+                        Some(v) => *bal = v,
+                        None => return Usp01Response {
+                            success: false, data: None,
+                            message: "Internal error: balance underflow after validation".to_string(),
+                            events: Vec::new(),
+                        },
+                    }
                 }
-                // Credit (checked_add prevents u128 overflow)
+                // Credit (checked_add — overflow = critical)
                 {
                     let bal = self.balances.entry(to.clone()).or_insert(0);
-                    *bal = bal.checked_add(amount).unwrap_or(u128::MAX);
+                    match bal.checked_add(amount) {
+                        Some(v) => *bal = v,
+                        None => return Usp01Response {
+                            success: false, data: None,
+                            message: "Internal error: recipient balance overflow".to_string(),
+                            events: Vec::new(),
+                        },
+                    }
                 }
-                // Reduce allowance (checked_sub for defense-in-depth)
+                // Reduce allowance (checked_sub — underflow = logic bug)
                 {
                     let allow = self
                         .allowances
                         .entry((from.clone(), caller.to_string()))
                         .or_insert(0);
-                    *allow = allow.checked_sub(amount).unwrap_or(0);
+                    match allow.checked_sub(amount) {
+                        Some(v) => *allow = v,
+                        None => return Usp01Response {
+                            success: false, data: None,
+                            message: "Internal error: allowance underflow after validation".to_string(),
+                            events: Vec::new(),
+                        },
+                    }
                 }
 
                 Usp01Response {
@@ -585,7 +620,14 @@ impl Usp01Token {
                 }
                 {
                     let bal = self.balances.entry(caller.to_string()).or_insert(0);
-                    *bal = bal.checked_sub(amount).unwrap_or(0);
+                    match bal.checked_sub(amount) {
+                        Some(v) => *bal = v,
+                        None => return Usp01Response {
+                            success: false, data: None,
+                            message: "Internal error: burn underflow after validation".to_string(),
+                            events: Vec::new(),
+                        },
+                    }
                 }
                 // Decrease total supply permanently
                 self.metadata.total_supply = self.metadata.total_supply.saturating_sub(amount);
@@ -671,10 +713,17 @@ impl Usp01Token {
                     };
                 }
                 self.used_proofs.insert(proof.clone());
-                // Mint tokens (checked_add prevents u128 overflow)
+                // Mint tokens (checked_add — overflow = critical)
                 {
                     let bal = self.balances.entry(to.clone()).or_insert(0);
-                    *bal = bal.checked_add(amount).unwrap_or(u128::MAX);
+                    match bal.checked_add(amount) {
+                        Some(v) => *bal = v,
+                        None => return Usp01Response {
+                            success: false, data: None,
+                            message: "Internal error: WrapMint balance overflow".to_string(),
+                            events: Vec::new(),
+                        },
+                    }
                 }
                 self.metadata.total_supply = self.metadata.total_supply.saturating_add(amount);
 
@@ -712,7 +761,14 @@ impl Usp01Token {
                 }
                 {
                     let bal = self.balances.entry(caller.to_string()).or_insert(0);
-                    *bal = bal.checked_sub(amount).unwrap_or(0);
+                    match bal.checked_sub(amount) {
+                        Some(v) => *bal = v,
+                        None => return Usp01Response {
+                            success: false, data: None,
+                            message: "Internal error: WrapBurn underflow after validation".to_string(),
+                            events: Vec::new(),
+                        },
+                    }
                 }
                 self.metadata.total_supply = self.metadata.total_supply.saturating_sub(amount);
 
