@@ -231,9 +231,18 @@ class ApiService {
           .where((p) {
             if (p == _excludedOnionUrl) return false;
             if (_bootstrapUrls.contains(p)) return false;
-            // Hostname dedup: skip if same hostname already known
-            final host = Uri.tryParse(p)?.host ?? '';
+            // Hostname dedup: skip if same .onion hostname already known
+            final uri = Uri.tryParse(p);
+            final host = uri?.host ?? '';
             if (host.isNotEmpty && knownHostnames.contains(host)) return false;
+            // GHOST PEER FILTER: Skip .onion URLs with default port 80.
+            // These are almost always P2P addresses (libp2p gossip) saved by
+            // mistake — the REST API runs on explicit ports (3030-3033).
+            // Port 80 .onion peers cause 30s timeouts and never respond.
+            if (host.endsWith('.onion') && (uri?.port ?? 80) == 80) {
+              losLog('🚫 Skipping ghost peer (port 80 .onion): $p');
+              return false;
+            }
             return true;
           })
           .take(_maxSavedPeers)
@@ -384,8 +393,9 @@ class ApiService {
 
     final results = <String, int>{};
 
-    // Limit concurrent probes to avoid saturating SOCKS5 proxy.
-    const maxConcurrent = 2;
+    // Probe in batches. 4 concurrent Tor circuits is safe for SOCKS5.
+    // Previously 2 — caused 120s+ waits with 8 nodes.
+    const maxConcurrent = 4;
     final nodesToProbe = _bootstrapUrls.where((url) {
       final health = _nodeHealthMap[url];
       if (health != null && health.isInCooldown) {
@@ -666,6 +676,90 @@ class ApiService {
     // After client is ready, load saved peers into bootstrap list
     PeerDiscoveryService.setNetwork(environment.name);
     await _loadSavedPeers();
+
+    // Race all bootstrap nodes in parallel to find the first live one.
+    // This turns O(N × 30s) sequential failover into O(min_latency).
+    await _raceForFirstNode();
+  }
+
+  /// Race ALL bootstrap nodes in parallel for /health.
+  /// First node to respond with HTTP 2xx wins → becomes baseUrl.
+  /// This eliminates the 30-45s × N sequential timeout cascade
+  /// that occurs when most nodes are offline.
+  ///
+  /// Example: 100 nodes, 1 alive → old: up to 99 × 30s = 49 min.
+  ///          With race: ~3-30s (time for the 1 alive node to respond).
+  Future<void> _raceForFirstNode() async {
+    final candidates = _bootstrapUrls.where((url) {
+      if (!_hasTor && url.contains('.onion')) return false;
+      if (_getHealth(url).isInCooldown) return false;
+      return true;
+    }).toList();
+
+    if (candidates.isEmpty) return;
+    if (candidates.length == 1) {
+      baseUrl = candidates.first;
+      return;
+    }
+
+    losLog('🏁 [Race] Racing ${candidates.length} node(s) for /health...');
+
+    final completer = Completer<String?>();
+    int failCount = 0;
+
+    for (final url in candidates) {
+      // Fire all probes simultaneously — each runs independently
+      () async {
+        try {
+          final timeout =
+              url.contains('.onion') ? _torProbeTimeout : _probeTimeout;
+          final sw = Stopwatch()..start();
+          final response = await _clientFor(url)
+              .get(Uri.parse('$url/health'))
+              .timeout(timeout);
+          sw.stop();
+
+          if (response.statusCode >= 200 &&
+              response.statusCode < 300 &&
+              !completer.isCompleted) {
+            _getHealth(url).recordSuccess(sw.elapsedMilliseconds);
+            completer.complete(url);
+            losLog(
+                '🏁 [Race] Winner: $url (${sw.elapsedMilliseconds}ms)');
+          } else {
+            _getHealth(url).recordFailure();
+            failCount++;
+            if (failCount >= candidates.length && !completer.isCompleted) {
+              completer.complete(null);
+            }
+          }
+        } catch (e) {
+          _getHealth(url).recordFailure();
+          failCount++;
+          if (failCount >= candidates.length && !completer.isCompleted) {
+            completer.complete(null);
+          }
+        }
+      }();
+    }
+
+    // Global timeout — don't block startup forever
+    Future.delayed(const Duration(seconds: 60), () {
+      if (!completer.isCompleted) {
+        losLog('🏁 [Race] Global timeout — no nodes responded in 60s');
+        completer.complete(null);
+      }
+    });
+
+    final winner = await completer.future;
+    if (winner != null) {
+      baseUrl = winner;
+      _currentNodeIndex =
+          _bootstrapUrls.indexOf(winner).clamp(0, _bootstrapUrls.length - 1);
+      losLog('🏁 [Race] baseUrl set to $winner');
+    } else {
+      losLog('🏁 [Race] No responsive nodes — keeping default: $baseUrl');
+    }
   }
 
   /// Create Tor-enabled HTTP client.
@@ -1643,10 +1737,26 @@ class ApiService {
 
             // Build URL with rest_port if provided by the API
             final restPort = ep['rest_port'] as int?;
-            final port = restPort ??
-                (host.contains(':')
-                    ? int.tryParse(host.split(':').last)
-                    : null);
+
+            // GHOST PEER FILTER: For .onion, require explicit rest_port.
+            // Without it, we'd default to port 80 which is almost always
+            // wrong — it's a P2P address from libp2p, not a REST endpoint.
+            // This was causing ghost .onion entries that timeout for 30s each.
+            if (isOnion && restPort == null) {
+              losLog('🚫 Skipping .onion peer without rest_port: $hostname');
+              continue;
+            }
+
+            // Skip P2P-only addresses (port 4xxx = libp2p gossip)
+            final rawPort = host.contains(':')
+                ? int.tryParse(host.split(':').last)
+                : null;
+            if (rawPort != null && rawPort >= 4000 && rawPort < 5000) {
+              losLog('🚫 Skipping P2P-only address: $host');
+              continue;
+            }
+
+            final port = restPort ?? rawPort;
             final url = (port != null && port != 80)
                 ? 'http://$hostname:$port'
                 : 'http://$hostname';
