@@ -6,6 +6,23 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [2.0.2] — 2026-02-24
+
+> **Scope:** Flutter apps only (`flutter_wallet`, `flutter_validator`). Rust crates remain at v2.0.1.
+
+### Changed
+
+- **Flutter apps bumped to 2.0.2** — `flutter_wallet` and `flutter_validator` pubspec.yaml, README badges, build scripts, and download links updated.
+- **Bootstrap node onion addresses updated** — All 4 genesis validators now use newly generated `.onion` addresses for mainnet deployment. Network configs in `flutter_wallet/assets/network_config.json` and `flutter_validator/assets/network_config.json` updated.
+- **Mining disabled on bootstrap nodes** — Genesis validators no longer run `--mine` to keep server resources free; PoW mining rewards are reserved for public miners.
+
+### Fixed (los-core / los-node v2.0.1)
+
+- **Supply audit double-counting** — Validator reward pool (500,000 LOS) was counted in both `distribution.remaining_supply` and `reward_pool_remaining`, causing false inflation alerts. Removed `reward_pool_remaining` from audit formula.
+- **Tor Health Monitor port** — Self-ping URL used default port 80 instead of the actual API port. Fixed to use `api_port` for correct Tor circuit validation.
+
+---
+
 ## [2.0.1] — 2026-02-24
 
 ### Changed
@@ -263,6 +280,7 @@ Pre-mainnet testing release deployed on the live Tor network.
 
 ---
 
+[2.0.2]: https://github.com/monkey-king-code/unauthority-core/releases/tag/v2.0.2
 [2.0.1]: https://github.com/monkey-king-code/unauthority-core/releases/tag/v2.0.1
 [2.0.0]: https://github.com/monkey-king-code/unauthority-core/releases/tag/v2.0.0
 [1.0.13]: https://github.com/monkey-king-code/unauthority-core/releases/tag/v1.0.13
