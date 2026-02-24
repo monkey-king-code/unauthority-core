@@ -423,7 +423,7 @@ Located at `flutter_wallet/assets/network_config.json` and `flutter_validator/as
   "mainnet": {
     "bootstrap_nodes": [
       {
-        "onion": "f3zfmhvverdljhddhxvdnkibrajd2cbolrfq4z6a5y2ifprf2xh34nid.onion",
+        "onion": "kljkjqozqois4hgzz66kdmggmuneggfw3zm7sa76vk7fmoz7pie5kyad.onion",
         "rest_port": 3030,
         "p2p_port": 4030
       }
@@ -561,7 +561,7 @@ curl --socks5-hostname 127.0.0.1:9050 http://check.torproject.org/api/ip
 
 # Check if bootstrap peers are reachable
 curl --socks5-hostname 127.0.0.1:9050 \
-  http://f3zfmhvverdljhddhxvdnkibrajd2cbolrfq4z6a5y2ifprf2xh34nid.onion:3030/health
+  http://kljkjqozqois4hgzz66kdmggmuneggfw3zm7sa76vk7fmoz7pie5kyad.onion:3030/health
 
 # Check node peer count
 curl http://127.0.0.1:3030/peers

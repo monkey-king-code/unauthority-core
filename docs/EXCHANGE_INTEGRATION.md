@@ -63,10 +63,10 @@ These are the genesis validator `.onion` addresses for initial peer discovery:
 
 | Validator | Onion Address | REST Port |
 |---|---|---|
-| V1 | `f3zfmhvverdljhddhxvdnkibrajd2cbolrfq4z6a5y2ifprf2xh34nid.onion` | 3030 |
-| V2 | `xchdcoebass6ewt7astm2ksacr55s7nd6l74qcmvkrm37t7pnqqf32qd.onion` | 3031 |
-| V3 | `7v5lqrgevfeyhb6aomt75dbagnkmxrthg6qehkxa2fv5ycxxam7e25qd.onion` | 3032 |
-| V4 | `7dbvneima7h5nc34x2c7frgyq64h64ipbes43pkd4lmc7hnfxzwl3lyd.onion` | 3033 |
+| V1 | `kljkjqozqois4hgzz66kdmggmuneggfw3zm7sa76vk7fmoz7pie5kyad.onion` | 3030 |
+| V2 | `cpdtxc3q3kt6krhx46ljnjnzswyu62p4sspeulagwu2schflaekaegqd.onion` | 3031 |
+| V3 | `yxqhqpwun6y7qhsboho7fkcso2hgp7lq3orfxdemuwm6iu5tfrfhvdad.onion` | 3032 |
+| V4 | `pqt2k7dspuyby7krdcfp2dv2ynb4hvliqyx5fcwnfmnnxvprnn4gsbad.onion` | 3033 |
 
 ---
 
@@ -79,7 +79,7 @@ All connections to LOS nodes require a Tor SOCKS5 proxy. Install Tor and use the
 **Example (curl):**
 ```bash
 curl --socks5-hostname 127.0.0.1:9050 \
-  http://f3zfmhvverdljhddhxvdnkibrajd2cbolrfq4z6a5y2ifprf2xh34nid.onion:3030/health
+  http://kljkjqozqois4hgzz66kdmggmuneggfw3zm7sa76vk7fmoz7pie5kyad.onion:3030/health
 ```
 
 **Example (Python):**
@@ -92,7 +92,7 @@ proxies = {
 }
 
 response = requests.get(
-    'http://f3zfmhvverdljhddhxvdnkibrajd2cbolrfq4z6a5y2ifprf2xh34nid.onion:3030/health',
+    'http://kljkjqozqois4hgzz66kdmggmuneggfw3zm7sa76vk7fmoz7pie5kyad.onion:3030/health',
     proxies=proxies,
     timeout=30
 )
@@ -105,7 +105,7 @@ const { SocksProxyAgent } = require('socks-proxy-agent');
 const axios = require('axios');
 
 const agent = new SocksProxyAgent('socks5h://127.0.0.1:9050');
-const BASE_URL = 'http://f3zfmhvverdljhddhxvdnkibrajd2cbolrfq4z6a5y2ifprf2xh34nid.onion:3030';
+const BASE_URL = 'http://kljkjqozqois4hgzz66kdmggmuneggfw3zm7sa76vk7fmoz7pie5kyad.onion:3030';
 
 const response = await axios.get(`${BASE_URL}/health`, { httpAgent: agent });
 console.log(response.data);
@@ -648,7 +648,7 @@ import time
 import requests
 
 PROXIES = {'http': 'socks5h://127.0.0.1:9050'}
-NODE = 'http://f3zfmhvverdljhddhxvdnkibrajd2cbolrfq4z6a5y2ifprf2xh34nid.onion:3030'
+NODE = 'http://kljkjqozqois4hgzz66kdmggmuneggfw3zm7sa76vk7fmoz7pie5kyad.onion:3030'
 DEPOSIT_ADDRESS = 'LOSX_YOUR_DEPOSIT_ADDRESS'
 
 seen_hashes = set()
@@ -694,7 +694,7 @@ const { SocksProxyAgent } = require('socks-proxy-agent');
 const axios = require('axios');
 
 const agent = new SocksProxyAgent('socks5h://127.0.0.1:9050');
-const NODE = 'http://f3zfmhvverdljhddhxvdnkibrajd2cbolrfq4z6a5y2ifprf2xh34nid.onion:3030';
+const NODE = 'http://kljkjqozqois4hgzz66kdmggmuneggfw3zm7sa76vk7fmoz7pie5kyad.onion:3030';
 
 async function getBalance(address) {
   try {
