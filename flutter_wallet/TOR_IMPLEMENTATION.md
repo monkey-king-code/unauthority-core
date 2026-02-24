@@ -164,7 +164,7 @@ chmod +x flutter_wallet/tor/linux/tor
 ## 🔒 Security Notes
 
 ### Tor Binary Integrity
-- macOS binary copied from Homebrew (`/opt/homebrew/bin/tor`)
+- macOS binary sourced from the official Tor distribution
 - Version: Tor 0.4.8.22
 - Users can verify with: `tor --version`
 

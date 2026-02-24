@@ -1,4 +1,4 @@
-# Architecture — Unauthority (LOS) v2.0.0
+# Architecture — Unauthority (LOS) v2.0.1
 
 System design, crate structure, data flow, and technical decisions for the Unauthority blockchain.
 

@@ -45,7 +45,7 @@ Your node runs as a **Tor Hidden Service** (`.onion` address) — fully private,
 | **RAM** | 4 GB |
 | **Disk** | 10 GB SSD |
 | **Internet** | Any stable connection |
-| **Stake** | 1,000 LOS to register as validator |
+| **Stake** | 1 LOS to register; 1,000 LOS for reward eligibility |
 
 > **No Rust/Flutter/CLI knowledge needed.** The app handles everything automatically.
 
@@ -180,14 +180,14 @@ To participate in consensus and earn rewards, you must register as a validator.
 ### Prerequisites
 
 - Node is **fully synced** (block height matches network)
-- Your wallet holds **≥ 1,000 LOS** (minimum stake)
+- Your wallet holds **≥ 1 LOS** (minimum registration stake; 1,000 LOS for rewards)
 - Node has been running for at least a few minutes (peers discovered)
 
 ### How to Register
 
 1. Navigate to the **Validator** section in the dashboard
 2. Click **"Register as Validator"**
-3. Enter your **stake amount** (minimum 1,000 LOS)
+3. Enter your **stake amount** (minimum 1 LOS to register; 1,000 LOS for reward eligibility)
 4. Confirm the registration transaction
 5. Wait for the transaction to be finalized (typically < 3 seconds)
 
@@ -205,7 +205,7 @@ To participate in consensus and earn rewards, you must register as a validator.
 | **Reward Pool** | 500,000 LOS (non-inflationary, fixed) |
 | **Rate** | 5,000 LOS/epoch, halving every 48 epochs |
 | **Formula** | `reward_i = budget × stake_i / Σ(stake_all)` (linear) |
-| **Min Stake** | 1,000 LOS |
+| **Min Stake** | 1 LOS (register) / 1,000 LOS (rewards) |
 | **Min Uptime** | 95% |
 
 > **Linear Voting:** LOS uses linear voting (1 LOS = 1 vote). This is Sybil-neutral — splitting stake across multiple identities yields the same total power.
@@ -348,7 +348,7 @@ When a new version is released:
 - Check logs for error messages
 
 **"Registration failed"**
-- Ensure your balance is ≥ 1,000 LOS
+- Ensure your balance is ≥ 1 LOS (registration) or ≥ 1,000 LOS (reward eligibility)
 - Ensure the node is fully synced
 - Wait a few seconds and retry
 
@@ -377,6 +377,48 @@ When a new version is released:
 
 ---
 
+## PoW Mining (Public Distribution)
+
+Validators can earn additional LOS by participating in **Proof-of-Work mining**. Mining distributes the public supply of 21,158,413 LOS over time.
+
+### How It Works
+
+- Mining runs as a **background thread** inside your validator node
+- The algorithm is **SHA3-256**: `SHA3(LOS_MINE_V1 ‖ chain_id ‖ address ‖ epoch ‖ nonce)`
+- Each epoch lasts **1 hour** (mainnet) or **2 minutes** (testnet)
+- Reward: **100 LOS/epoch**, halving every 8,760 epochs (~1 year)
+- **One reward per address per epoch** — no double-mining
+
+### Enabling Mining in the Dashboard
+
+1. Go to **Settings** → **Mining**
+2. Toggle **"Enable Mining"** to ON
+3. Set **Mining Threads** (default: 1 thread; more threads = higher chance per epoch)
+4. **Restart the node** for changes to take effect
+
+> **Requirement:** You must be running a full validator node. Mining is built into the node binary — there is no external mining API.
+
+### Monitoring Mining
+
+| Dashboard Field | Meaning |
+|---|---|
+| **Mining Status** | Active / Inactive |
+| **Current Epoch** | The epoch your miner is working on |
+| **Hashrate** | Approximate hashes/second |
+| **Blocks Mined** | Total successful mining proofs |
+| **Mining Rewards** | Total LOS earned from PoW mining |
+
+### Mining vs Validator Rewards
+
+| | Validator Rewards | Mining Rewards |
+|---|---|---|
+| **Source** | 500,000 LOS pool | 21,158,413 LOS pool |
+| **Requirement** | ≥ 1,000 LOS stake + 95% uptime | Run node with mining enabled |
+| **Distribution** | Proportional to stake (linear) | First valid proof per epoch wins |
+| **Halving** | Every 48 epochs (~4 years) | Every 8,760 epochs (~1 year) |
+
+---
+
 ## FAQ
 
 **Q: Do I need to install Tor separately?**
@@ -386,7 +428,7 @@ A: No. The app downloads and manages Tor automatically.
 A: The Flutter app requires a desktop environment. For headless VPS servers, use the [CLI guide](VALIDATOR_GUIDE.md) with `los-node` directly.
 
 **Q: How much LOS do I need to start?**
-A: 1,000 LOS minimum stake to register as a validator.
+A: 1 LOS minimum to register as a validator. 1,000 LOS minimum for reward eligibility.
 
 **Q: Is my IP address exposed?**
 A: No. All network traffic goes through Tor. Your node is only reachable via its `.onion` address.

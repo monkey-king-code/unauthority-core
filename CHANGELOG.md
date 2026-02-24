@@ -6,6 +6,33 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [2.0.1] — 2026-02-24
+
+### Changed
+
+- **Version bumped to 2.0.1** across all crates, Flutter apps, docs, configs, badges, and build scripts.
+
+### Fixed
+
+- **Window titles standardized** — Validator: "LOS Validator & Miner" (Linux/Windows). Wallet: "LOS Wallet" (Windows `main.cpp`).
+- **Dockerfile multi-network build** — Added `ARG NETWORK=testnet` with conditional `--features mainnet` for mainnet builds.
+- **Dev path leak in release builds** — `NodeProcessService` dev paths gated behind `kDebugMode`.
+- **Validator registration docs** — Corrected minimum from 1,000 → 1 LOS for registration, 1,000 LOS for rewards across all docs.
+- **PoW Mining documentation** — Added mining section to Flutter Validator Guide with `--mine` and `--mine-threads` CLI flags.
+- **Ed25519 verbose comments** — Condensed to single-line note in both wallet services.
+- **Homebrew path leak** — Removed hardcoded `/opt/homebrew/bin/tor` from TOR_IMPLEMENTATION.md.
+- **Windows Tor README** — Added auto-download note for Tor Expert Bundle.
+- **Validator uptime model** — `uptimeBps` (basis points, int) for mainnet-safe uptime display.
+- **`validator.toml` documentation** — Added sample configuration section to Validator Guide.
+
+### Removed
+
+- **Web platform directories** — Deleted `flutter_wallet/web/` and `flutter_validator/web/` (web platform not supported).
+- **Dev/test scripts** — Moved regression test and helper scripts to `dev_docs/scripts/` (gitignored).
+- **Old UAT release artifacts** — Removed v1.0.x `.dmg` installers from `release/`.
+
+---
+
 ## [2.0.0] — 2026-02-24
 
 ### Changed
@@ -236,6 +263,7 @@ Pre-mainnet testing release deployed on the live Tor network.
 
 ---
 
+[2.0.1]: https://github.com/monkey-king-code/unauthority-core/releases/tag/v2.0.1
 [2.0.0]: https://github.com/monkey-king-code/unauthority-core/releases/tag/v2.0.0
 [1.0.13]: https://github.com/monkey-king-code/unauthority-core/releases/tag/v1.0.13
 [1.0.12]: https://github.com/monkey-king-code/unauthority-core/releases/tag/v1.0.12

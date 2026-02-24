@@ -2,7 +2,7 @@
 
 Validator node dashboard for **Unauthority (LOS)** blockchain. Track node status, manage keys, and monitor consensus participation.
 
-[![Version](https://img.shields.io/badge/version-2.0.0-blue)]()
+[![Version](https://img.shields.io/badge/version-2.0.1-blue)]()
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue)](../LICENSE)
 
 ---
@@ -39,7 +39,7 @@ Pre-built releases for macOS, Windows, and Linux:
 >
 > **Windows:** Right-click both `flutter_validator.exe` and `los-node.exe` → Properties → Unblock, then launch. If SmartScreen appears: click "More info" → "Run anyway"  
 >
-> **Linux:** Make executable: `chmod +x run.sh flutter_validator los-node`, then run via `./run.sh` (sets `LD_LIBRARY_PATH` for native library).
+> **Linux:** Make executable: `chmod +x run.sh los-validator-miner los-node`, then run via `./run.sh` (sets `LD_LIBRARY_PATH` for native library).
 >
 > **First Launch:** The dashboard auto-downloads Tor Expert Bundle (~20MB, 1-2 min).
 >

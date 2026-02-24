@@ -1,4 +1,4 @@
-# Validator Guide — Unauthority (LOS) v2.0.0
+# Validator Guide — Unauthority (LOS) v2.0.1
 
 This guide covers everything you need to run a validator node on the Unauthority network: installation, Tor setup, configuration, registration, rewards, monitoring, and maintenance.
 
@@ -315,6 +315,8 @@ journalctl -u los-node -n 100 --no-pager
 | `--port <PORT>` | REST API listen port | `3030` |
 | `--data-dir <DIR>` | Data directory for ledger, wallet, checkpoints | `node_data/node-{port}/` |
 | `--node-id <ID>` | Node identifier | `node-{port}` |
+| `--mine` | Enable PoW mining (background thread) | off |
+| `--mine-threads <N>` | Number of mining threads | `1` |
 | `--json-log` | Output logs as JSON (for Flutter dashboard parsing) | off |
 | `--config <FILE>` | Load additional config from TOML file | none |
 
@@ -327,6 +329,43 @@ Given `--port 3030`:
 | REST API | 3030 | `--port` value |
 | P2P Gossip | 4030 | `--port` + 1000 |
 | gRPC | 23030 | `--port` + 20000 |
+
+### Configuration File (`validator.toml`)
+
+When using `--config validator.toml`, the node loads additional settings from a TOML file. A reference `validator.toml` is included in the repository root. Key sections:
+
+```toml
+[validator]
+node_id = "validator-1"
+address = "${LOS_VALIDATOR_ADDRESS}"
+private_key_path = "${LOS_VALIDATOR_PRIVKEY_PATH}"
+stake_cil = 100000000000000  # 1,000 LOS
+auto_claim_rewards = true
+
+[sentry_public]
+listen_addr = "0.0.0.0"
+listen_port = 30333
+external_addr = "${LOS_ONION_ADDRESS:-auto}"
+
+[network]
+max_peers = 128
+min_peers = 8
+peer_discovery_interval_seconds = 300
+
+[consensus]
+type = "aBFT"
+finality_time_seconds = 3
+
+[storage]
+data_dir = "./node_data/validator-1"
+prune_enabled = true
+
+[logging]
+level = "INFO"
+format = "json"
+```
+
+> **Note:** Environment variable substitution (e.g. `${LOS_VALIDATOR_ADDRESS}`) is supported. See the full `validator.toml` in the repository root for all available options including sentry node architecture configuration.
 
 ---
 
@@ -398,7 +437,7 @@ Response:
 ```json
 {
   "status": "healthy",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "uptime_seconds": 86400,
   "chain": { "accounts": 8, "blocks": 42, "id": "los-mainnet" },
   "database": { "accounts_count": 8, "blocks_count": 42, "size_on_disk": 524287 }

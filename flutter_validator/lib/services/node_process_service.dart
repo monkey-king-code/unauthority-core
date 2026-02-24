@@ -845,17 +845,19 @@ class NodeProcessService extends ChangeNotifier {
       dir = dir.parent;
     }
 
-    // Fallback: check common dev paths
-    final home = Platform.environment['HOME'] ?? '/tmp';
-    final devPaths = [
-      path.join(home, 'unauthority-core'),
-      path.join(home, 'Documents', 'unauthority-core'),
-      Directory.current.path,
-    ];
+    // Fallback: check common dev paths (debug builds only)
+    if (kDebugMode) {
+      final home = Platform.environment['HOME'] ?? '/tmp';
+      final devPaths = [
+        path.join(home, 'unauthority-core'),
+        path.join(home, 'Documents', 'unauthority-core'),
+        Directory.current.path,
+      ];
 
-    for (final p in devPaths) {
-      if (await File(path.join(p, 'Cargo.toml')).exists()) {
-        return p;
+      for (final p in devPaths) {
+        if (await File(path.join(p, 'Cargo.toml')).exists()) {
+          return p;
+        }
       }
     }
 

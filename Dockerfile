@@ -17,8 +17,15 @@ COPY genesis_config.json ./
 COPY los.proto ./
 COPY pqcrypto-internals-seeded ./pqcrypto-internals-seeded
 
-# Build release binaries
-RUN cargo build --release -p los-node -p los-cli
+# Network selection: "testnet" (default) or "mainnet"
+ARG NETWORK=testnet
+
+# Build release binaries (add --features mainnet for mainnet builds)
+RUN if [ "$NETWORK" = "mainnet" ]; then \
+      cargo build --release -p los-node -p los-cli --features mainnet; \
+    else \
+      cargo build --release -p los-node -p los-cli; \
+    fi
 
 # Strip private keys from genesis config for runtime image
 RUN jq 'del(.bootstrap_nodes[].private_key, .bootstrap_nodes[].seed_phrase, .dev_accounts[].private_key, .dev_accounts[].seed_phrase)' \

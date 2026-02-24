@@ -176,7 +176,7 @@ class ValidatorInfo {
   final bool isActive;
   final bool connected;
   final bool isGenesis;
-  final double uptimePercentage;
+  final int uptimeBps; // Basis points: 10000 = 100.00%, integer-only
   final bool hasMinStake;
   final String? onionAddress;
 
@@ -186,12 +186,27 @@ class ValidatorInfo {
     required this.isActive,
     this.connected = false,
     this.isGenesis = false,
-    this.uptimePercentage = 0.0,
+    this.uptimeBps = 0,
     this.hasMinStake = false,
     this.onionAddress,
   });
 
+  /// Display-only uptime string: "99.50%"
+  String get uptimeDisplay =>
+      '${uptimeBps ~/ 100}.${(uptimeBps % 100).toString().padLeft(2, '0')}%';
+
   factory ValidatorInfo.fromJson(Map<String, dynamic> json) {
+    // Parse uptime: backend sends bps (int) or legacy percentage (double)
+    final rawUptime = json['uptime_percentage'] ?? json['uptime_bps'] ?? 0;
+    final int bps;
+    if (rawUptime is double) {
+      bps = (rawUptime * 100).round(); // legacy: 99.5 → 9950 bps
+    } else if (rawUptime is int) {
+      // If value ≤ 100, it's a percentage — convert to bps
+      bps = rawUptime <= 100 ? rawUptime * 100 : rawUptime;
+    } else {
+      bps = 0;
+    }
     return ValidatorInfo(
       address: json['address'] ?? '',
       stake: json['stake'] ?? 0,
@@ -199,7 +214,7 @@ class ValidatorInfo {
       isActive: json['active'] ?? json['is_active'] ?? false,
       connected: json['connected'] ?? false,
       isGenesis: json['is_genesis'] ?? false,
-      uptimePercentage: (json['uptime_percentage'] as num?)?.toDouble() ?? 0.0,
+      uptimeBps: bps,
       hasMinStake: json['has_min_stake'] ?? false,
       onionAddress: json['onion_address']?.toString(),
     );
