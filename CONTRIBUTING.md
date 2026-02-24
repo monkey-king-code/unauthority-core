@@ -247,7 +247,7 @@ See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full system design. Key crat
 | Crate | Purpose |
 |---|---|
 | `los-node` | Main validator binary |
-| `los-core` | Blockchain primitives (Block, Ledger, Oracle) |
+| `los-core` | Blockchain primitives (Block, Ledger) |
 | `los-consensus` | aBFT consensus, slashing, checkpoints |
 | `los-network` | P2P, Tor transport, fee scaling |
 | `los-crypto` | Dilithium5 and SHA-3 cryptography |

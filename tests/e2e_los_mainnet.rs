@@ -654,50 +654,13 @@ async fn test_node_recovery() {
 }
 
 // ============================================================================
-// TEST 5: DISTRIBUTION & SUPPLY YIELD
+// TEST 5: DISTRIBUTION & SUPPLY EXHAUSTION
 // ============================================================================
-// Tests distribution.calculate_yield() with integer math only.
+// Tests supply tracking and exhaustion via PoW mining distribution.
 #[tokio::test]
-async fn test_distribution_supply_yield() {
-    println!("\n🧪 TEST 5: Distribution & Supply Yield");
+async fn test_distribution_supply_exhaustion() {
+    println!("\n🧪 TEST 5: Distribution & Supply Exhaustion");
     println!("================================================\n");
-
-    let ledger = Ledger::new();
-    let initial_supply = ledger.distribution.remaining_supply;
-    println!("  Initial remaining supply: {} CIL", initial_supply);
-
-    // Verify yield calculations are strictly integer
-    let burn_amounts_usd = [100u128, 1_000, 10_000, 100_000, 1_000_000];
-    let mut prev_yield = 0u128;
-
-    for burn in &burn_amounts_usd {
-        let yield_cil = ledger.distribution.calculate_yield(*burn);
-        // Yield must be > 0 for non-zero burn (or 0 for small burns)
-        // u128 is always >= 0, so just check it doesn't exceed supply
-        // Yield must be monotonically non-decreasing w.r.t. burn
-        assert!(
-            yield_cil >= prev_yield,
-            "Yield must increase with burn: burn={}, yield={}, prev={}",
-            burn,
-            yield_cil,
-            prev_yield
-        );
-        // Must not exceed remaining supply
-        assert!(
-            yield_cil <= initial_supply,
-            "Yield {} exceeds remaining supply {}",
-            yield_cil,
-            initial_supply
-        );
-        println!(
-            "  Burn ${}: yield = {} CIL ({} LOS)",
-            burn,
-            yield_cil,
-            yield_cil / CIL_PER_LOS
-        );
-        prev_yield = yield_cil;
-    }
-    println!("  ✅ Yield curve: monotonically non-decreasing, bounded");
 
     // Supply exhaustion: mint until no more supply
     let mut ledger = Ledger::new();

@@ -49,8 +49,6 @@ use std::fs;
 use std::time::{Duration, Instant};
 
 // Named constants for consensus thresholds (no more magic numbers)
-/// Linear voting power threshold for burn consensus (production)
-const BURN_CONSENSUS_THRESHOLD: u128 = 20_000;
 /// Linear voting power threshold for send confirmation (production)
 const SEND_CONSENSUS_THRESHOLD: u128 = 20_000;
 /// Minimum DISTINCT voters required for consensus on production.
@@ -85,13 +83,9 @@ const TESTNET_INITIAL_BALANCE: u128 = 1000 * CIL_PER_LOS;
 /// Total supply: 21,936,236 LOS (protocol constant, validated against genesis on mainnet)
 const TOTAL_SUPPLY_LOS: u128 = 21_936_236;
 const TOTAL_SUPPLY_CIL: u128 = TOTAL_SUPPLY_LOS * CIL_PER_LOS;
-/// Maximum age of a burn TX: 25 days from current node time.
-/// Prevents claiming historical/ancient TXIDs that the sender has no relation to.
-const BURN_TX_MAX_AGE_SECS: u64 = 25 * 24 * 3600;
 /// Testnet faucet payout per request (5,000 LOS).
 /// MAINNET: Faucet endpoint is disabled on mainnet builds — this value is never used.
 const FAUCET_AMOUNT_CIL: u128 = 5_000 * CIL_PER_LOS;
-use serde_json::Value;
 
 mod db; // NEW: Database module (sled)
 mod genesis;
@@ -109,10 +103,7 @@ use metrics::LosMetrics;
 use warp::Filter;
 
 const LEDGER_FILE: &str = "ledger_state.json";
-const BURN_ADDRESS_ETH: &str = "0x000000000000000000000000000000000000dead";
-/// Provably unspendable Bitcoin burn address (BitcoinEater pattern)
-/// No private key can generate this address — coins sent here are permanently destroyed
-const BURN_ADDRESS_BTC: &str = "1BitcoinEaterAddressDontSendf59kuE";
+
 
 // Race condition protection: Atomic flags for save state
 static SAVE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
@@ -311,18 +302,6 @@ struct SendRequest {
 }
 
 #[derive(serde::Deserialize, serde::Serialize)]
-struct BurnRequest {
-    coin_type: String, // "eth" or "btc"
-    txid: String,
-    recipient_address: Option<String>, // Address to receive minted LOS (optional, defaults to sender)
-    // MAINNET SECURITY: signature proves caller owns the recipient_address
-    // Required on mainnet and consensus testnet when recipient_address is provided.
-    // On functional testnet, these are optional (node signs the Mint block).
-    signature: Option<String>, // Dilithium5 signature over "BURN:{coin_type}:{txid}:{recipient}"
-    public_key: Option<String>, // Sender's Dilithium5 public key (hex)
-}
-
-#[derive(serde::Deserialize, serde::Serialize)]
 struct DeployContractRequest {
     owner: String,
     bytecode: String, // base64 encoded WASM
@@ -479,7 +458,6 @@ pub struct ApiServerConfig {
     pub ledger: Arc<Mutex<Ledger>>,
     pub tx_out: mpsc::Sender<String>,
     pub pending_sends: Arc<Mutex<HashMap<String, (Block, u128)>>>,
-    pub pending_burns: Arc<Mutex<HashMap<String, (u128, u128, String, u128, u64, String)>>>,
     pub address_book: Arc<Mutex<HashMap<String, String>>>,
     pub my_address: String,
     pub secret_key: Zeroizing<Vec<u8>>,
@@ -494,8 +472,6 @@ pub struct ApiServerConfig {
     pub bootstrap_validators: Vec<String>,
     /// Validator reward pool — epoch-based reward distribution engine
     pub reward_pool: Arc<Mutex<ValidatorRewardPool>>,
-    /// Burn vote deduplication — tracks which validators already voted per txid
-    pub burn_voters: Arc<Mutex<HashMap<String, HashSet<String>>>>,
     /// Known validator host endpoints: validator_address → host_address
     /// Host can be .onion, IP:port, or domain:port. Tor is optional.
     /// Populated from LOS_HOST_ADDRESS/LOS_ONION_ADDRESS (self), VALIDATOR_REG gossip, and PEER_LIST exchange.
@@ -524,7 +500,6 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
         ledger,
         tx_out,
         pending_sends,
-        pending_burns,
         address_book,
         my_address,
         secret_key,
@@ -535,7 +510,6 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
         node_public_key,
         bootstrap_validators,
         reward_pool,
-        burn_voters,
         validator_endpoints,
         mempool_pool,
         abft_consensus,
@@ -554,7 +528,6 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
 
     // Per-address endpoint rate limiters
     let send_limiter = Arc::new(EndpointRateLimiter::new(10, 60)); // /send: 10 tx per 60 seconds
-    let burn_limiter = Arc::new(EndpointRateLimiter::new(1, 60)); // /burn: 1 per 60 seconds (testnet)
     let faucet_limiter = Arc::new(EndpointRateLimiter::new(1, 120)); // /faucet: 1 per 2 minutes (testnet)
 
     // aBFT Consensus Engine — passed from main() via ApiServerConfig, shared with event loop
@@ -630,8 +603,7 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                 "circulating_supply": format_balance_precise(circulating_cil),
                 "circulating_supply_cil": circulating_cil,
                 "remaining_supply": format_balance_precise(remaining_cil),
-                "remaining_supply_cil": remaining_cil,
-                "total_burned_usd": l_guard.distribution.total_burned_usd
+                "remaining_supply_cil": remaining_cil
             }))
         });
 
@@ -1234,403 +1206,6 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                 }))
             } else {
                 api_json(serde_json::json!({"status":"error","msg":"Address not found"}))
-            }
-        });
-
-    // 6. POST /burn (WEIGHTED INITIAL POWER + SANITASI + ANTI-DOUBLE-CLAIM)
-    let p_burn = pending_burns.clone();
-    let tx_burn = tx_out.clone();
-    let l_burn = ledger.clone();
-    let bl_burn = burn_limiter.clone();
-    let pk_burn = node_public_key.clone();
-    let sk_burn = secret_key.clone();
-    let bv_burn = burn_voters.clone();
-    let burn_route = warp::path("burn")
-        .and(warp::post())
-        .and(warp::body::bytes())
-        .and(with_state((p_burn, tx_burn, my_address.clone(), l_burn, bl_burn, (pk_burn, sk_burn, bv_burn))))
-        .then(#[allow(clippy::type_complexity)] |body: bytes::Bytes, (p, tx, my_addr, l, rate_lim, (node_pk, node_sk, bv)): (Arc<Mutex<HashMap<String, (u128, u128, String, u128, u64, String)>>>, mpsc::Sender<String>, String, Arc<Mutex<Ledger>>, Arc<EndpointRateLimiter>, (Vec<u8>, Zeroizing<Vec<u8>>, Arc<Mutex<HashMap<String, HashSet<String>>>>))| async move {
-
-            // Parse JSON manually to return proper 400 instead of 500
-            let req: BurnRequest = match serde_json::from_slice(&body) {
-                Ok(r) => r,
-                Err(e) => {
-                    return api_json(serde_json::json!({
-                        "status": "error",
-                        "code": 400,
-                        "msg": format!("Invalid request body: {}", e)
-                    }));
-                }
-            };
-
-            // 1. Sanitize TXID
-            let clean_txid = req.txid.trim().trim_start_matches("0x").to_lowercase();
-
-            // Validate TXID format (must be hex, 64 chars for ETH, 64 for BTC)
-            if clean_txid.is_empty() || clean_txid.len() > 128 || !clean_txid.chars().all(|c| c.is_ascii_hexdigit()) {
-                return api_json(serde_json::json!({
-                    "status": "error",
-                    "msg": "Invalid TXID format: must be a non-empty hex string (max 128 chars)"
-                }));
-            }
-
-            // Validate coin_type — only "eth" and "btc" are supported
-            let coin_lower = req.coin_type.to_lowercase();
-            if coin_lower != "eth" && coin_lower != "btc" {
-                return api_json(serde_json::json!({
-                    "status": "error",
-                    "msg": format!("Unsupported coin type: '{}'. Only 'eth' and 'btc' are supported.", req.coin_type)
-                }));
-            }
-
-            // Validate recipient_address format if provided
-            if let Some(ref addr) = req.recipient_address {
-                if !los_crypto::validate_address(addr) {
-                    return api_json(serde_json::json!({
-                        "status": "error",
-                        "msg": "Invalid recipient address format. Must be Base58Check with LOS prefix."
-                    }));
-                }
-            }
-
-            // Determine recipient address for rate limiting
-            let recipient = req.recipient_address.as_ref().unwrap_or(&my_addr);
-
-            // MAINNET/CONSENSUS SECURITY: When a custom recipient_address is specified,
-            // caller must prove ownership via Dilithium5 signature.
-            // Burn message format: "BURN:{coin_type}:{txid}:{recipient}"
-            // If no recipient is specified, the node's own address is used (node signs Mint block).
-            if req.recipient_address.is_some() && testnet_config::get_testnet_config().should_validate_signatures() {
-                match (&req.signature, &req.public_key) {
-                    (Some(sig_hex), Some(pk_hex)) => {
-                        // Verify that public_key maps to the claimed recipient_address
-                        let pk_bytes = match hex::decode(pk_hex) {
-                            Ok(b) => b,
-                            Err(_) => return api_json(serde_json::json!({
-                                "status": "error",
-                                "msg": "Invalid public_key hex encoding"
-                            })),
-                        };
-                        let derived_addr = los_crypto::public_key_to_address(&pk_bytes);
-                        if derived_addr != *recipient {
-                            return api_json(serde_json::json!({
-                                "status": "error",
-                                "msg": "public_key does not match recipient_address"
-                            }));
-                        }
-                        // Verify signature over burn message
-                        let burn_msg = format!("BURN:{}:{}:{}", coin_lower, clean_txid, recipient);
-                        let sig_bytes = match hex::decode(sig_hex) {
-                            Ok(b) => b,
-                            Err(_) => return api_json(serde_json::json!({
-                                "status": "error",
-                                "msg": "Invalid signature hex encoding"
-                            })),
-                        };
-                        if !los_crypto::verify_signature(burn_msg.as_bytes(), &sig_bytes, &pk_bytes) {
-                            return api_json(serde_json::json!({
-                                "status": "error",
-                                "msg": "Invalid burn signature: Dilithium5 verification failed"
-                            }));
-                        }
-                        println!("✅ Burn signature verified for recipient {}", get_short_addr(recipient));
-                    }
-                    _ => {
-                        return api_json(serde_json::json!({
-                            "status": "error",
-                            "msg": "Custom recipient_address requires signature + public_key fields for authentication"
-                        }));
-                    }
-                }
-            }
-
-            // RATE LIMIT: 1 burn per 60 seconds per recipient address
-            // Only CHECK here — record only after successful burn (not on failures like duplicate TXID)
-            if let Err(wait_secs) = rate_lim.check_only(recipient) {
-                return api_json(serde_json::json!({
-                    "status": "error",
-                    "code": 429,
-                    "msg": format!("Rate limit exceeded: max 1 burn per 60 seconds. Try again in {} seconds.", wait_secs)
-                }));
-            }
-
-            // 2. Double-Claim Protection (Ledger & Pending)
-            let (in_ledger, my_power) = {
-                let l_guard = safe_lock(&l);
-                let exists = l_guard.blocks.values().any(|b| b.block_type == BlockType::Mint && b.link.contains(&clean_txid));
-                // Self-vote must use linear voting power
-                // consistent with external VOTE_RES accumulation (× 1000 scale).
-                // Now: calculate_voting_power(balance) * 1000 (matches VOTE_RES path)
-                let balance = l_guard.accounts.get(&my_addr).map(|a| a.balance).unwrap_or(0);
-                let pwr = calculate_voting_power(balance) * 1000;
-                (exists, pwr)
-            };
-
-            let is_pending = safe_lock(&p).contains_key(&clean_txid);
-
-            if in_ledger || is_pending {
-                return api_json(serde_json::json!({
-                    "status": "error",
-                    "msg": "This TXID has already been used or is currently being verified!"
-                }));
-            }
-
-            // 3. Fetch external prices for burn calculation
-            let (ep, bp) = get_crypto_prices().await;
-
-            let res = if req.coin_type.to_lowercase() == "eth" {
-                verify_eth_burn_tx(&clean_txid).await.map(|(a, bt)| (a, ep, "ETH", bt))
-            } else {
-                verify_btc_burn_tx(&clean_txid).await.map(|(a, bt)| (a, bp, "BTC", bt))
-            };
-
-            if let Some((amt, prc, sym, block_time)) = res {
-                // SECURITY: 25-day rolling window — reject burn TXs older than 25 days
-                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
-                if block_time == 0 {
-                    return api_json(serde_json::json!({
-                        "status": "error",
-                        "msg": "Cannot determine burn TX confirmation time — unconfirmed or API error"
-                    }));
-                }
-                if now.saturating_sub(block_time) > BURN_TX_MAX_AGE_SECS {
-                    return api_json(serde_json::json!({
-                        "status": "error",
-                        "msg": format!("Burn TX too old: confirmed {} secs ago (max {} secs / 25 days)", now.saturating_sub(block_time), BURN_TX_MAX_AGE_SECS)
-                    }));
-                }
-
-                // Pure integer math via calculate_mint_cil()
-                let los_to_mint = match calculate_mint_cil(amt, prc, sym) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        return api_json(serde_json::json!({"error": format!("Mint calculation overflow: {}", e)}));
-                    }
-                };
-                if los_to_mint == 0 {
-                    return api_json(serde_json::json!({"error": "Burn amount too small or overflow"}));
-                }
-
-                // Testnet instant mint path (no consensus needed)
-                if !testnet_config::get_testnet_config().should_enable_consensus() {
-                    // Get recipient address from request, fallback to sender if not provided
-                    let recipient = req.recipient_address.as_ref().unwrap_or(&my_addr).clone();
-
-                    let mint_result = {
-                        // Lock ledger for minting
-                        let mut l_guard = safe_lock(&l);
-
-                            // Ensure account exists
-                            if !l_guard.accounts.contains_key(&recipient) {
-                                l_guard.accounts.insert(recipient.clone(), AccountState {
-                                    head: "0".to_string(), balance: 0, block_count: 0, is_validator: false,
-                                });
-                            }
-
-                            let state = l_guard.accounts.get(&recipient).cloned().unwrap_or(AccountState {
-                                head: "0".to_string(), balance: 0, block_count: 0, is_validator: false,
-                            });
-
-                            let mut mint_blk = Block {
-                                account: recipient.clone(),
-                                previous: state.head.clone(),
-                                block_type: BlockType::Mint,
-                                amount: los_to_mint,
-                                // Prefix with TESTNET: on functional testnet build ONLY to bypass mint cap in ledger.
-                                // MAINNET: is_testnet_build() is a const fn that returns false on mainnet builds,
-                                // so the compiler eliminates the TESTNET: branch entirely — it cannot exist in mainnet binary.
-                                link: if los_core::is_testnet_build() && testnet_config::get_testnet_config().level == testnet_config::TestnetLevel::Functional {
-                                    format!("TESTNET:{}:{}:{}", sym, clean_txid, prc)
-                                } else {
-                                    format!("{}:{}:{}", sym, clean_txid, prc)
-                                },
-                                signature: "".to_string(),
-                                public_key: hex::encode(&node_pk), // Node's public key
-                                work: 0,
-                                timestamp: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
-                                fee: 0,
-                            };
-
-                            solve_pow(&mut mint_blk);
-                            mint_blk.signature = match try_sign_hex(mint_blk.signing_hash().as_bytes(), &node_sk) {
-                                Ok(sig) => sig,
-                                Err(e) => return api_json(serde_json::json!({"status": "error", "msg": e})),
-                            };
-
-                            match l_guard.process_block(&mint_blk) {
-                                Ok(result) => {
-                                    let hash = result.into_hash();
-                                    SAVE_DIRTY.store(true, Ordering::Release);
-                                    println!("🧪 TESTNET (Functional): Instant mint {} → {} LOS to {}", sym, los_to_mint / CIL_PER_LOS, recipient);
-                                    // Return hash AND serialized block for gossip
-                                    Ok((hash, serde_json::to_string(&mint_blk).unwrap_or_default()))
-                                }
-                                Err(e) => Err(format!("Mint failed: {}", e))
-                            }
-                        }; // L dropped
-
-                    match mint_result {
-                        Err(msg) => {
-                            return api_json(serde_json::json!({
-                                "status": "error",
-                                "msg": msg
-                            }));
-                        }
-                        Ok((hash, gossip_msg)) => {
-                            // Gossip functional-testnet Mint block to all peers
-                            let _ = tx.send(gossip_msg).await;
-                            // Record rate limit ONLY on successful burn
-                            rate_lim.record_success(&recipient);
-                            // Pure u128: usd_micro = amt_base × price_micro / base_divisor
-                            let base_div: u128 = if sym == "ETH" { 1_000_000_000_000_000_000 } else { 100_000_000 };
-                            let usd_micro = amt.saturating_mul(prc) / base_div;
-                            let usd_value_str = format!("{}.{:02}", usd_micro / 1_000_000, (usd_micro % 1_000_000) / 10_000);
-                            return api_json(serde_json::json!({
-                                "status":"success",
-                                "msg":"Burn finalized instantly (Functional Testnet)",
-                                "los_minted": los_to_mint / CIL_PER_LOS,
-                                "usd_value": usd_value_str,
-                                "recipient": recipient,
-                                "block_hash": hash
-                            }));
-                        }
-                    }
-                }
-
-                // Production path: Add to pending with initial power = our own balance + recipient address
-                let created_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
-                let burn_recipient = req.recipient_address.as_ref().unwrap_or(&my_addr).clone();
-                safe_lock(&p).insert(clean_txid.clone(), (amt, prc, sym.to_string(), my_power, created_at, burn_recipient.clone()));
-
-                // SECURITY: Register self in burn_voters dedup to prevent double-counting
-                // when VOTE_RES arrives from peers (same logic as VOTE_RES handler).
-                {
-                    let mut voters = safe_lock(&bv);
-                    let voter_set = voters.entry(clean_txid.clone()).or_default();
-                    voter_set.insert(my_addr.clone());
-                }
-
-                // CONSENSUS CHECK: Self-vote alone can never reach consensus on mainnet.
-                // min_distinct_voters() ensures enough independent validators must agree.
-                // On functional testnet (no consensus), self-vote is sufficient.
-                let threshold = if !testnet_config::get_testnet_config().should_enable_consensus() {
-                    TESTNET_FUNCTIONAL_THRESHOLD
-                } else {
-                    BURN_CONSENSUS_THRESHOLD
-                };
-                // Dynamic min_voters based on active validator count
-                // Must filter by is_validator — treasury wallets have high balance but
-                // are NOT validators and don't run nodes. Without this, non-validator
-                // accounts inflate vc, making min_distinct_voters unreachable.
-                let active_vc = safe_lock(&l).accounts.values().filter(|a| a.is_validator && a.balance >= MIN_VALIDATOR_STAKE_CIL).count();
-                let min_voters = if !testnet_config::get_testnet_config().should_enable_consensus() {
-                    1
-                } else {
-                    min_distinct_voters(active_vc)
-                };
-
-                let voter_count = safe_lock(&bv).get(&clean_txid).map(|s| s.len()).unwrap_or(0);
-                if my_power >= threshold && voter_count >= min_voters {
-                    println!("✅ Self-Consensus Achieved (Power: {} >= Threshold: {}, Voters: {}/{})!", my_power, threshold, voter_count, min_voters);
-
-                    // Mint using same logic as VOTE_RES consensus path
-                    let mint_result: Result<(u128, String), String> = {
-                        let mut l_guard = safe_lock(&l);
-
-                        // Ensure recipient account exists
-                        if !l_guard.accounts.contains_key(&burn_recipient) {
-                            l_guard.accounts.insert(burn_recipient.clone(), AccountState {
-                                head: "0".to_string(), balance: 0, block_count: 0, is_validator: false,
-                            });
-                        }
-                        let state = l_guard.accounts.get(&burn_recipient).cloned().unwrap_or(AccountState {
-                            head: "0".to_string(), balance: 0, block_count: 0, is_validator: false,
-                        });
-
-                        let mut mint_blk = Block {
-                            account: burn_recipient.clone(),
-                            previous: state.head.clone(),
-                            block_type: BlockType::Mint,
-                            amount: los_to_mint,
-                            link: format!("Src:{}:{}:{}", sym, clean_txid, prc),
-                            signature: "".to_string(),
-                            public_key: hex::encode(&node_pk),
-                            work: 0,
-                            timestamp: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
-                            fee: 0,
-                        };
-
-                        solve_pow(&mut mint_blk);
-                        let signing_hash = mint_blk.signing_hash();
-                        mint_blk.signature = match try_sign_hex(signing_hash.as_bytes(), &node_sk) {
-                            Ok(sig) => sig,
-                            Err(e) => return api_json(serde_json::json!({"status": "error", "msg": e})),
-                        };
-
-                        match l_guard.process_block(&mint_blk) {
-                            Ok(_result) => {
-                                SAVE_DIRTY.store(true, Ordering::Release);
-                                println!("🔥 Burn Minting Successful: +{} LOS to {}!", format_u128(los_to_mint / CIL_PER_LOS), get_short_addr(&burn_recipient));
-                                // Gossip the mint block to peers
-                                Ok((los_to_mint, serde_json::to_string(&mint_blk).unwrap_or_default()))
-                            }
-                            Err(e) => Err(format!("Mint failed: {}", e))
-                        }
-                    }; // L dropped
-
-                    // Cleanup pending state
-                    safe_lock(&p).remove(&clean_txid);
-                    safe_lock(&bv).remove(&clean_txid);
-
-                    match mint_result {
-                        Ok((minted, gossip_msg)) => {
-                            // Gossip mint block to peers
-                            let _ = tx.send(gossip_msg).await;
-                            // Record rate limit
-                            rate_lim.record_success(recipient);
-                            let base_div: u128 = if sym == "ETH" { 1_000_000_000_000_000_000 } else { 100_000_000 };
-                            let usd_micro = amt.saturating_mul(prc) / base_div;
-                            let usd_value_str = format!("{}.{:02}", usd_micro / 1_000_000, (usd_micro % 1_000_000) / 10_000);
-                            return api_json(serde_json::json!({
-                                "status": "success",
-                                "msg": "Burn finalized (consensus reached)",
-                                "los_minted": minted / CIL_PER_LOS,
-                                "usd_value": usd_value_str,
-                                "recipient": burn_recipient
-                            }));
-                        }
-                        Err(e) => {
-                            return api_json(serde_json::json!({
-                                "status": "error",
-                                "msg": e
-                            }));
-                        }
-                    }
-                }
-
-                // Self-vote alone insufficient — wait for peer votes via VOTE_RES
-                // Record rate limit ONLY after successful pending insertion
-                rate_lim.record_success(recipient);
-
-                let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
-                let vote_msg = format!("VOTE_REQ:{}:{}:{}:{}", req.coin_type.to_lowercase(), clean_txid, my_addr, ts);
-                println!("📡 Broadcasting VOTE_REQ: {} (Initial Power: {})", &vote_msg[..50], my_power);
-                let _ = tx.send(vote_msg).await;
-
-                api_json(serde_json::json!({
-                    "status":"success",
-                    "msg":"Verification started — waiting for peer consensus",
-                    "initial_power": my_power,
-                    "threshold": threshold
-                }))
-            } else {
-                let coin = req.coin_type.to_lowercase();
-                println!("❌ Burn verification FAILED for {} TXID: {} — price API returned None", coin.to_uppercase(), &clean_txid[..clean_txid.len().min(16)]);
-                println!("   ↳ Possible causes: TX not yet confirmed on-chain, burn address mismatch, or API unreachable");
-                api_json(serde_json::json!({
-                    "status": "error",
-                    "msg": format!("Burn verification failed for {} TXID. This can happen if: (1) TX is not yet confirmed on the {} blockchain, (2) TX does not send to the official burn address, or (3) the price API is currently unreachable. Please wait for blockchain confirmation and try again.", coin.to_uppercase(), coin.to_uppercase())
-                }))
             }
         });
 
@@ -2611,95 +2186,6 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
             }
         });
 
-    // 15b. POST /reset-burn-txid (TESTNET ONLY — Remove used burn TXIDs to allow re-testing)
-    // MAINNET: is_testnet_build() is a const fn that returns false on mainnet builds,
-    // so the compiler eliminates this endpoint entirely — it cannot exist in mainnet binary.
-    let l_reset = ledger.clone();
-    let reset_burn_route = warp::path("reset-burn-txid")
-        .and(warp::post())
-        .and(warp::body::bytes())
-        .and(with_state(l_reset))
-        .map(|body: bytes::Bytes, l: Arc<Mutex<Ledger>>| {
-            // Parse JSON manually to return proper 400 instead of 500
-            let req: serde_json::Value = match serde_json::from_slice(&body) {
-                Ok(r) => r,
-                Err(e) => {
-                    return api_json(serde_json::json!({
-                        "status": "error",
-                        "code": 400,
-                        "msg": format!("Invalid request body: {}", e)
-                    }));
-                }
-            };
-            // HARD GUARD: Only available on testnet builds
-            if !los_core::is_testnet_build() {
-                return api_json(serde_json::json!({
-                    "status": "error",
-                    "msg": "This endpoint is only available on testnet"
-                }));
-            }
-
-            let txids: Vec<String> = match req.get("txids") {
-                Some(serde_json::Value::Array(arr)) => {
-                    arr.iter().filter_map(|v| v.as_str().map(|s| s.trim().trim_start_matches("0x").to_lowercase())).collect()
-                }
-                _ => {
-                    return api_json(serde_json::json!({
-                        "status": "error",
-                        "msg": "Provide { \"txids\": [\"txid1\", \"txid2\"] }"
-                    }));
-                }
-            };
-
-            if txids.is_empty() {
-                return api_json(serde_json::json!({
-                    "status": "error",
-                    "msg": "No TXIDs provided"
-                }));
-            }
-
-            let mut l_guard = safe_lock(&l);
-            let mut removed_count = 0u32;
-            let mut details: Vec<serde_json::Value> = Vec::new();
-
-            for txid in &txids {
-                // Find all Mint blocks that reference this TXID
-                let matching_hashes: Vec<String> = l_guard.blocks.iter()
-                    .filter(|(_, b)| b.block_type == BlockType::Mint && b.link.contains(txid.as_str()))
-                    .map(|(h, _)| h.clone())
-                    .collect();
-
-                for hash in &matching_hashes {
-                    if let Some(block) = l_guard.blocks.remove(hash) {
-                        // Reverse the balance: subtract minted amount from account
-                        if let Some(account) = l_guard.accounts.get_mut(&block.account) {
-                            account.balance = account.balance.saturating_sub(block.amount);
-                            // Reset head to previous block
-                            account.head = block.previous.clone();
-                            account.block_count = account.block_count.saturating_sub(1);
-                        }
-                        details.push(serde_json::json!({
-                            "txid": txid,
-                            "block_hash": hash,
-                            "amount_reversed": block.amount / CIL_PER_LOS,
-                            "account": get_short_addr(&block.account)
-                        }));
-                        removed_count += 1;
-                    }
-                }
-            }
-
-            if removed_count > 0 {
-                SAVE_DIRTY.store(true, Ordering::Release);
-            }
-
-            api_json(serde_json::json!({
-                "status": "success",
-                "msg": format!("Cleared {} Mint block(s) for {} TXID(s)", removed_count, txids.len()),
-                "removed": removed_count,
-                "details": details
-            }))
-        });
 
     // 16. GET /blocks/recent (Recent blocks for validator dashboard)
     let l_blocks = ledger.clone();
@@ -2826,7 +2312,7 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                 "node_info": "GET /node-info - Node information",
                 "bal": "GET /bal/{address} - Account balance (short alias)",
                 "balance": "GET /balance/{address} - Account balance",
-                "supply": "GET /supply - Total supply, burned, remaining",
+                "supply": "GET /supply - Total supply, circulating, remaining",
                 "fee_estimate": "GET /fee-estimate/{address} - Fee estimate (flat base fee)",
                 "mining_info": "GET /mining-info - PoW mining epoch, difficulty, reward info",
 
@@ -2849,11 +2335,9 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                 "metrics": "GET /metrics - Prometheus metrics",
                 "mempool_stats": "GET /mempool/stats - Mempool statistics",
                 "send": "POST /send {from, target, amount} - Send transaction",
-                "burn": "POST /burn {chain, tx_hash} - Burn bridge (wrapped asset mint)",
                 "faucet": "POST /faucet {address} - Claim testnet tokens",
                 "register_validator": "POST /register-validator - Register as validator",
                 "unregister_validator": "POST /unregister-validator - Unregister validator",
-                "reset_burn_txid": "POST /reset-burn-txid - Reset stuck burn TXID",
                 "deploy_contract": "POST /deploy-contract - Deploy WASM smart contract",
                 "call_contract": "POST /call-contract - Call smart contract method",
                 "contract": "GET /contract/{address} - Contract info and state",
@@ -3241,7 +2725,6 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                     },
                     "confirmation": {
                         "send_threshold": SEND_CONSENSUS_THRESHOLD,
-                        "burn_threshold": BURN_CONSENSUS_THRESHOLD,
                         "voting_model": "linear (stake_cil)",
                         "signature_scheme": "Dilithium5 (post-quantum)"
                     },
@@ -4191,9 +3674,8 @@ function copyText(text){{navigator.clipboard.writeText(text).then(function(){{va
         .or(send_route.boxed())
         .boxed();
 
-    let group2 = burn_route
+    let group2 = deploy_route
         .boxed()
-        .or(deploy_route)
         .or(metrics_route.boxed())
         .or(node_info_route.boxed())
         .boxed();
@@ -4205,7 +3687,6 @@ function copyText(text){{navigator.clipboard.writeText(text).then(function(){{va
         .or(mining_info_route.boxed())
         .or(block_route.boxed())
         .or(faucet_route.boxed())
-        .or(reset_burn_route.boxed())
         .or(blocks_recent_route.boxed())
         .or(whoami_route.boxed())
         .boxed();
@@ -4272,6 +3753,14 @@ function copyText(text){{navigator.clipboard.writeText(text).then(function(){{va
     // to mine new LOS tokens. Mining is independent of consensus — it only
     // submits proofs to the local API which creates Mint blocks.
     if enable_mining {
+        // Genesis bootstrap validators are excluded from mining rewards.
+        // All mining rewards go to public miners for fair distribution.
+        let is_genesis_miner = bootstrap_validators.contains(&my_address);
+        if is_genesis_miner {
+            println!("⛏️  Mining DISABLED: genesis bootstrap validators cannot mine.");
+            println!("   All mining rewards are reserved for public miners.");
+        }
+
         let ms_bg = mining_state.clone();
         let l_bg = ledger.clone();
         let db_bg = database.clone();
@@ -4280,6 +3769,7 @@ function copyText(text){{navigator.clipboard.writeText(text).then(function(){{va
         let tx_bg = tx_out.clone();
         let my_addr_bg = my_address.clone();
 
+        if !is_genesis_miner {
         tokio::spawn(async move {
             println!(
                 "⛏️  Mining thread started (address: {})",
@@ -4469,8 +3959,9 @@ function copyText(text){{navigator.clipboard.writeText(text).then(function(){{va
                             let gossip_msg = format!("MINE_BLOCK:{}", json);
                             let _ = tx_bg.send(gossip_msg).await;
                         }
-                        let reward_los = reward_cil as f64 / CIL_PER_LOS as f64;
-                        println!("⛏️  Mined {:.4} LOS in epoch {} ✓", reward_los, epoch);
+                        let reward_los = reward_cil / CIL_PER_LOS;
+                        let reward_remainder = (reward_cil % CIL_PER_LOS) / (CIL_PER_LOS / 10000); // 4 decimal places
+                        println!("⛏️  Mined {}.{:04} LOS in epoch {} ✓", reward_los, reward_remainder, epoch);
                     }
                 } else {
                     // Mining was cancelled (epoch changed) — retry immediately
@@ -4478,6 +3969,7 @@ function copyText(text){{navigator.clipboard.writeText(text).then(function(){{va
                 }
             }
         });
+        } // end if !is_genesis_miner
     }
 
     // Bind to 127.0.0.1 for Tor/production (prevents IP leak)
@@ -4569,580 +4061,6 @@ async fn handle_rejection(
     }
 }
 
-/// Fetch crypto prices from external APIs, returning micro-USD (u128).
-/// 1 USD = 1,000,000 micro-USD. NO f64 in return path — deterministic across nodes.
-/// API JSON f64 values are converted to u128 at the boundary (single conversion, safe).
-async fn get_crypto_prices() -> (u128, u128) {
-    /// 1 USD = 1,000,000 micro-USD
-    const MICRO: u128 = 1_000_000;
-
-    // SECURITY: Route price requests through Tor SOCKS5 proxy if available
-    // Prevents IP leak when fetching prices from clearweb APIs
-    let proxy_url = std::env::var("LOS_SOCKS5_PROXY").unwrap_or_default();
-    let client = if !proxy_url.is_empty() {
-        match reqwest::Proxy::all(&proxy_url) {
-            Ok(proxy) => reqwest::Client::builder()
-                .user_agent("Mozilla/5.0")
-                .timeout(Duration::from_secs(15))
-                .proxy(proxy)
-                .build()
-                .unwrap_or_default(),
-            Err(e) => {
-                // MAINNET SAFETY (W7): If proxy was configured but failed,
-                // DO NOT fall back to direct connection (would leak real IP).
-                // Return fail-closed prices (0) instead.
-                eprintln!(
-                    "🛑 Price SOCKS5 proxy failed ({}): {} — returning 0 (fail-closed, no IP leak)",
-                    proxy_url, e
-                );
-                return (0, 0);
-            }
-        }
-    } else {
-        reqwest::Client::builder()
-            .user_agent("Mozilla/5.0")
-            .timeout(Duration::from_secs(10))
-            .build()
-            .unwrap_or_default()
-    };
-
-    let url_coingecko =
-        "https://api.coingecko.com/api/v3/simple/price?ids=ethereum,bitcoin&vs_currencies=usd";
-    let url_cryptocompare =
-        "https://min-api.cryptocompare.com/data/pricemulti?fsyms=BTC,ETH&tsyms=USD";
-    let url_kraken = "https://api.kraken.com/0/public/Ticker?pair=ETHUSD,XBTUSD"; // Kraken (global exchange)
-
-    // Collect prices as micro-USD (u128) — f64→u128 conversion at API boundary
-    let mut eth_prices: Vec<u128> = Vec::new();
-    let mut btc_prices: Vec<u128> = Vec::new();
-
-    /// Convert API f64 price to micro-USD (u128). Single f64→u128 at external API boundary.
-    /// MAINNET NOTE: External JSON APIs (CoinGecko, CryptoCompare) return numbers as f64.
-    /// This is the single unavoidable conversion point. Result feeds into median consensus.
-    fn to_micro(price_f64: f64) -> Option<u128> {
-        if price_f64.is_finite() && price_f64 > 0.0 {
-            Some((price_f64 * MICRO as f64).round() as u128)
-        } else {
-            None
-        }
-    }
-
-    /// MAINNET: Deterministic string-to-micro-USD conversion (no f64).
-    /// Parses decimal strings like "2000.50" directly to micro-USD u128.
-    fn str_to_micro(price_str: &str) -> Option<u128> {
-        let trimmed = price_str.trim();
-        if trimmed.is_empty() {
-            return None;
-        }
-        let parts: Vec<&str> = trimmed.split('.').collect();
-        let whole: u128 = parts[0].parse().ok()?;
-        let frac_micro = if parts.len() > 1 {
-            // Pad or truncate to 6 decimal places (micro-USD)
-            // Use fill='0', align='<' format spec.
-            // `{:<06}` is WRONG for strings — the '0' flag only works for numeric types;
-            // for strings it pads with spaces, silently corrupting fractional cents.
-            // `{:0<6}` correctly zero-pads: "50" → "500000" (not "50    ").
-            let frac_str = parts[1];
-            let padded = format!("{:0<6}", frac_str);
-            padded[..6].parse::<u128>().unwrap_or(0)
-        } else {
-            0
-        };
-        whole.checked_mul(MICRO)?.checked_add(frac_micro)
-    }
-
-    // 1. Fetch CoinGecko
-    if let Ok(resp) = client.get(url_coingecko).send().await {
-        if let Ok(json) = resp.json::<Value>().await {
-            if let Some(p) = json["ethereum"]["usd"].as_f64().and_then(to_micro) {
-                eth_prices.push(p);
-            }
-            if let Some(p) = json["bitcoin"]["usd"].as_f64().and_then(to_micro) {
-                btc_prices.push(p);
-            }
-        }
-    }
-
-    // 2. Fetch CryptoCompare
-    if let Ok(resp) = client.get(url_cryptocompare).send().await {
-        if let Ok(json) = resp.json::<Value>().await {
-            if let Some(p) = json["ETH"]["USD"].as_f64().and_then(to_micro) {
-                eth_prices.push(p);
-            }
-            if let Some(p) = json["BTC"]["USD"].as_f64().and_then(to_micro) {
-                btc_prices.push(p);
-            }
-        }
-    }
-
-    // 3. Fetch Kraken (Global exchange)
-    if let Ok(resp) = client.get(url_kraken).send().await {
-        if let Ok(json) = resp.json::<Value>().await {
-            if let Some(result) = json["result"].as_object() {
-                // Kraken returns prices in array format (string)
-                if let Some(eth) = result.get("XETHZUSD") {
-                    if let Some(p_array) = eth["c"].as_array() {
-                        if let Some(p_str) = p_array[0].as_str() {
-                            // MAINNET: Use string parser (no f64) for Kraken prices
-                            if let Some(micro) = str_to_micro(p_str) {
-                                eth_prices.push(micro);
-                            }
-                        }
-                    }
-                }
-                if let Some(btc) = result.get("XXBTZUSD") {
-                    if let Some(p_array) = btc["c"].as_array() {
-                        if let Some(p_str) = p_array[0].as_str() {
-                            // MAINNET: Use string parser (no f64) for Kraken prices
-                            if let Some(micro) = str_to_micro(p_str) {
-                                btc_prices.push(micro);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Calculate Final Average (pure u128 integer math)
-    // SECURITY: On production testnet level, require at least 1 real price from API
-    // Fallback prices are only used on functional/consensus levels
-    // MAINNET SAFETY: On mainnet build, is_production_level is always true (forced by
-    // testnet_config.rs LazyLock). Fallback prices can never be reached on mainnet.
-    let is_production_level = testnet_config::get_testnet_config().should_enable_consensus()
-        && testnet_config::is_production_simulation();
-
-    // COMPILE-TIME GUARD: On mainnet feature, assert that fallback prices are unreachable
-    #[cfg(feature = "mainnet")]
-    debug_assert!(
-        is_production_level,
-        "MAINNET: is_production_level must be true — fallback prices are unreachable"
-    );
-
-    // Testnet fallback prices in micro-USD: ETH $2500, BTC $83000
-    const FALLBACK_ETH_MICRO: u128 = 2_500_000_000; // $2,500.00
-    const FALLBACK_BTC_MICRO: u128 = 83_000_000_000; // $83,000.00
-
-    let final_eth: u128 = if eth_prices.is_empty() {
-        if is_production_level {
-            println!("🛑 PRODUCTION: All ETH price APIs failed — rejecting (fail-closed)");
-            0 // Fail-closed: returning 0 will cause burn validation to reject
-        } else {
-            println!("⚠️ No ETH prices from APIs, using testnet fallback $2500");
-            FALLBACK_ETH_MICRO
-        }
-    } else {
-        // Integer average: sum / count (no f64 division)
-        let sum: u128 = eth_prices.iter().sum();
-        sum / eth_prices.len() as u128
-    };
-
-    let final_btc: u128 = if btc_prices.is_empty() {
-        if is_production_level {
-            println!("🛑 PRODUCTION: All BTC price APIs failed — rejecting (fail-closed)");
-            0 // Fail-closed
-        } else {
-            println!("⚠️ No BTC prices from APIs, using testnet fallback $83000");
-            FALLBACK_BTC_MICRO
-        }
-    } else {
-        let sum: u128 = btc_prices.iter().sum();
-        sum / btc_prices.len() as u128
-    };
-
-    // Sanity bounds to reject manipulated prices (micro-USD)
-    // ETH reasonable range: $10 - $100,000 | BTC reasonable range: $100 - $10,000,000
-    const ETH_MIN_MICRO: u128 = 10 * MICRO; // $10
-    const ETH_MAX_MICRO: u128 = 100_000 * MICRO; // $100,000
-    const BTC_MIN_MICRO: u128 = 100 * MICRO; // $100
-    const BTC_MAX_MICRO: u128 = 10_000_000 * MICRO; // $10,000,000
-
-    let final_eth = if !(ETH_MIN_MICRO..=ETH_MAX_MICRO).contains(&final_eth) {
-        if is_production_level || final_eth == 0 {
-            println!(
-                "🛑 ETH price ${}.{:02} out of sanity bounds — fail-closed",
-                final_eth / MICRO,
-                (final_eth % MICRO) / 10_000
-            );
-            0
-        } else {
-            println!(
-                "⚠️ ETH price ${}.{:02} out of sanity bounds, using fallback $2500",
-                final_eth / MICRO,
-                (final_eth % MICRO) / 10_000
-            );
-            FALLBACK_ETH_MICRO
-        }
-    } else {
-        final_eth
-    };
-
-    let final_btc = if !(BTC_MIN_MICRO..=BTC_MAX_MICRO).contains(&final_btc) {
-        if is_production_level || final_btc == 0 {
-            println!(
-                "🛑 BTC price ${}.{:02} out of sanity bounds — fail-closed",
-                final_btc / MICRO,
-                (final_btc % MICRO) / 10_000
-            );
-            0
-        } else {
-            println!(
-                "⚠️ BTC price ${}.{:02} out of sanity bounds, using fallback $83000",
-                final_btc / MICRO,
-                (final_btc % MICRO) / 10_000
-            );
-            FALLBACK_BTC_MICRO
-        }
-    } else {
-        final_btc
-    };
-
-    // Show successful source count (for debugging)
-    println!(
-        "📊 External Prices ({} APIs): ETH ${}.{:02}, BTC ${}.{:02}",
-        eth_prices.len(),
-        final_eth / MICRO,
-        (final_eth % MICRO) / 10_000,
-        final_btc / MICRO,
-        (final_btc % MICRO) / 10_000
-    );
-
-    (final_eth, final_btc)
-}
-
-/// Parse ISO 8601 timestamp to unix seconds (e.g. "2025-01-15T12:34:56Z" → 1736944496).
-/// Used for blockcypher "confirmed" field. Returns None on parse failure.
-/// No external chrono dependency — pure integer arithmetic.
-fn parse_iso8601_to_unix(s: &str) -> Option<u64> {
-    // Expected format: "YYYY-MM-DDTHH:MM:SSZ" or "YYYY-MM-DDTHH:MM:SS.xxxZ"
-    let s = s.trim().trim_end_matches('Z');
-    let (date_part, time_part) = s.split_once('T')?;
-    let date_parts: Vec<&str> = date_part.split('-').collect();
-    let time_str = time_part.split('.').next()?; // drop fractional seconds
-    let time_parts: Vec<&str> = time_str.split(':').collect();
-    if date_parts.len() != 3 || time_parts.len() != 3 {
-        return None;
-    }
-    let year: u64 = date_parts[0].parse().ok()?;
-    let month: u64 = date_parts[1].parse().ok()?;
-    let day: u64 = date_parts[2].parse().ok()?;
-    let hour: u64 = time_parts[0].parse().ok()?;
-    let min: u64 = time_parts[1].parse().ok()?;
-    let sec: u64 = time_parts[2].parse().ok()?;
-
-    // Days from epoch (1970-01-01) using a simplified formula
-    // Adjust month: Jan/Feb are months 13/14 of previous year
-    let (y, m) = if month <= 2 {
-        (year - 1, month + 12)
-    } else {
-        (year, month)
-    };
-    // Julian Day Number calculation (Gregorian calendar)
-    let jdn = 365 * y + y / 4 - y / 100 + y / 400 + (153 * (m - 3) + 2) / 5 + day - 719469;
-    Some(jdn * 86400 + hour * 3600 + min * 60 + sec)
-}
-
-/// Verify ETH burn transaction, returning (amount_wei, block_time_unix).
-/// 1 ETH = 10^18 wei. No f64 in return path — deterministic.
-/// block_time is unix timestamp of the confirmed TX on Ethereum mainnet.
-async fn verify_eth_burn_tx(txid: &str) -> Option<(u128, u64)> {
-    // Testnet: Accept any valid format TXID and mock burn amount
-    // TXID verification is an external dependency (real ETH blockchain) — mock it in testnet.
-    // Price consensus and mint consensus still run for real at Level 2+.
-    if testnet_config::get_testnet_config().enable_faucet {
-        let clean_txid = txid.trim().trim_start_matches("0x").to_lowercase();
-        if clean_txid.len() == 64 && clean_txid.chars().all(|c| c.is_ascii_hexdigit()) {
-            println!(
-                "🧪 TESTNET: Accepting ETH TXID {} with mock amount 0.01 ETH",
-                &clean_txid[..16]
-            );
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            return Some((10_000_000_000_000_000, now)); // 0.01 ETH in wei (~30 LOS)
-        }
-        return None;
-    }
-
-    let clean_txid = txid.trim().trim_start_matches("0x").to_lowercase();
-    let url = format!("https://api.blockcypher.com/v1/eth/main/txs/{}", clean_txid);
-    let proxy_url = std::env::var("LOS_SOCKS5_PROXY").unwrap_or_default();
-
-    // Try up to 2 attempts: first via Tor SOCKS5, then direct if Tor fails.
-    // Burn verification reads PUBLIC blockchain data — no privacy leak.
-    // Many clearnet APIs (blockcypher) block Tor exit nodes.
-    let attempts: Vec<(&str, bool)> = if proxy_url.is_empty() {
-        vec![("direct", false)]
-    } else {
-        vec![("tor-proxy", true), ("direct-fallback", false)]
-    };
-
-    for (label, use_proxy) in &attempts {
-        let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(30));
-        if *use_proxy {
-            if let Ok(proxy) = reqwest::Proxy::all(&proxy_url) {
-                builder = builder.proxy(proxy);
-                println!(
-                    "🌐 ETH price [{}]: Using SOCKS5 proxy for blockcypher",
-                    label
-                );
-            }
-        } else if attempts.len() > 1 {
-            builder = builder.no_proxy();
-            println!(
-                "🌐 ETH price [{}]: Tor failed/blocked, retrying direct HTTPS",
-                label
-            );
-        } else {
-            builder = builder.no_proxy();
-            println!(
-                "⚠️ ETH price [{}]: No SOCKS5 proxy set, connecting directly",
-                label
-            );
-        }
-        let client = match builder.build() {
-            Ok(c) => c,
-            Err(e) => {
-                println!(
-                    "❌ ETH price [{}]: Failed to build HTTP client: {}",
-                    label, e
-                );
-                continue;
-            }
-        };
-        println!(
-            "🌐 ETH price [{}]: Verifying TXID {} via blockcypher...",
-            label, clean_txid
-        );
-        match client.get(&url).send().await {
-            Ok(resp) => {
-                let status = resp.status();
-                println!(
-                    "🌐 ETH price [{}]: blockcypher responded with HTTP {}",
-                    label, status
-                );
-                if !status.is_success() {
-                    continue; // Try next attempt
-                }
-                match resp.json::<Value>().await {
-                    Ok(json) => {
-                        // Extract confirmed timestamp from blockcypher response.
-                        // "confirmed" is ISO 8601 (e.g. "2025-01-15T12:00:00Z").
-                        let block_time: u64 = json["confirmed"]
-                            .as_str()
-                            .and_then(parse_iso8601_to_unix)
-                            .unwrap_or(0);
-                        if let Some(outputs) = json["outputs"].as_array() {
-                            let target = BURN_ADDRESS_ETH.to_lowercase().replace("0x", "");
-                            println!("🌐 ETH price [{}]: TX has {} outputs, checking for burn address...", label, outputs.len());
-                            for (i, out) in outputs.iter().enumerate() {
-                                if let Some(addrs) = out["addresses"].as_array() {
-                                    for a in addrs {
-                                        if a.as_str().unwrap_or("").to_lowercase() == target {
-                                            // BlockCypher returns value in wei (integer)
-                                            // MAINNET SAFETY: NO f64 — use u64 then string parse for large values
-                                            // f64 loses precision above 2^53 (~9 ETH in wei)
-                                            let wei = out["value"]
-                                                .as_u64()
-                                                .map(|v| v as u128)
-                                                .unwrap_or_else(|| {
-                                                    // Fallback: parse as string → u128 (exact, no float rounding)
-                                                    out["value"]
-                                                        .as_str()
-                                                        .and_then(|s| s.parse::<u128>().ok())
-                                                        .unwrap_or(0)
-                                                });
-                                            println!("✅ ETH price [{}]: Found burn output #{}: {} wei to {} (block_time={})", label, i, wei, BURN_ADDRESS_ETH, block_time);
-                                            return Some((wei, block_time));
-                                        }
-                                    }
-                                }
-                            }
-                            println!(
-                                "❌ ETH price [{}]: No output found to burn address {}",
-                                label, BURN_ADDRESS_ETH
-                            );
-                        } else {
-                            println!(
-                                "❌ ETH price [{}]: No 'outputs' field in TX data. Error: {:?}",
-                                label,
-                                json.get("error")
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        println!("❌ ETH price [{}]: Failed to parse JSON: {}", label, e);
-                    }
-                }
-            }
-            Err(e) => {
-                println!("❌ ETH price [{}]: HTTP request failed: {}", label, e);
-                println!("   ↳ Possible causes: TX not yet broadcast, Tor proxy down, or blockcypher blocks Tor exit nodes");
-                continue;
-            }
-        }
-    }
-    None
-}
-
-/// Verify BTC burn transaction, returning (amount_satoshi, block_time_unix).
-/// 1 BTC = 10^8 satoshi. No f64 in return path — deterministic.
-/// block_time is unix timestamp from mempool.space `status.block_time` field.
-async fn verify_btc_burn_tx(txid: &str) -> Option<(u128, u64)> {
-    // Testnet: Accept any valid format TXID and mock burn amount
-    // TXID verification is an external dependency (real BTC blockchain) — mock it in testnet.
-    // Price consensus and mint consensus still run for real at Level 2+.
-    if testnet_config::get_testnet_config().enable_faucet {
-        let clean_txid = txid.trim().to_lowercase();
-        if clean_txid.len() == 64 && clean_txid.chars().all(|c| c.is_ascii_hexdigit()) {
-            println!(
-                "🧪 TESTNET: Accepting BTC TXID {} with mock amount 0.001 BTC",
-                &clean_txid[..16]
-            );
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            return Some((100_000, now)); // 0.001 BTC in satoshi (~69 LOS)
-        }
-        return None;
-    }
-
-    let url = format!("https://mempool.space/api/tx/{}", txid.trim());
-    let proxy_url = std::env::var("LOS_SOCKS5_PROXY").unwrap_or_default();
-
-    // Try up to 2 attempts: first via Tor SOCKS5, then direct if Tor fails.
-    // Burn verification reads PUBLIC blockchain data — no privacy leak.
-    // Many clearnet APIs (mempool.space) block Tor exit nodes.
-    let attempts: Vec<(&str, bool)> = if proxy_url.is_empty() {
-        vec![("direct", false)]
-    } else {
-        vec![("tor-proxy", true), ("direct-fallback", false)]
-    };
-
-    for (label, use_proxy) in &attempts {
-        let mut builder = reqwest::Client::builder()
-            .user_agent("Mozilla/5.0")
-            .timeout(Duration::from_secs(30));
-        if *use_proxy {
-            if let Ok(proxy) = reqwest::Proxy::all(&proxy_url) {
-                builder = builder.proxy(proxy);
-                println!(
-                    "🌐 BTC price [{}]: Using SOCKS5 proxy for mempool.space",
-                    label
-                );
-            }
-        } else if attempts.len() > 1 {
-            // reqwest may inherit system proxy; explicitly disable for direct fallback
-            builder = builder.no_proxy();
-            println!(
-                "🌐 BTC price [{}]: Tor failed/blocked, retrying direct HTTPS",
-                label
-            );
-        } else {
-            builder = builder.no_proxy();
-            println!(
-                "⚠️ BTC price [{}]: No SOCKS5 proxy set, connecting directly",
-                label
-            );
-        }
-        let client = match builder.build() {
-            Ok(c) => c,
-            Err(e) => {
-                println!(
-                    "❌ BTC price [{}]: Failed to build HTTP client: {}",
-                    label, e
-                );
-                continue;
-            }
-        };
-        println!(
-            "🌐 BTC price [{}]: Verifying TXID {} via mempool.space...",
-            label, txid
-        );
-        match client.get(&url).send().await {
-            Ok(resp) => {
-                let status = resp.status();
-                println!(
-                    "🌐 BTC price [{}]: mempool.space responded with HTTP {}",
-                    label, status
-                );
-                if !status.is_success() {
-                    if let Ok(body) = resp.text().await {
-                        println!(
-                            "❌ BTC price [{}]: Error body: {}",
-                            label,
-                            &body[..body.len().min(200)]
-                        );
-                    }
-                    continue; // Try next attempt
-                }
-                match resp.text().await {
-                    Ok(body) => {
-                        match serde_json::from_str::<Value>(&body) {
-                            Ok(json) => {
-                                if let Some(vout) = json["vout"].as_array() {
-                                    // Extract block_time from mempool.space response:
-                                    // json["status"]["block_time"] is unix timestamp (u64)
-                                    let block_time: u64 =
-                                        json["status"]["block_time"].as_u64().unwrap_or(0);
-                                    println!("🌐 BTC price [{}]: TX has {} outputs, block_time={}, checking for burn address...", label, vout.len(), block_time);
-                                    for (i, out) in vout.iter().enumerate() {
-                                        let out_str = out.to_string();
-                                        if out_str.contains(BURN_ADDRESS_BTC) {
-                                            // mempool.space returns value in satoshi (integer)
-                                            // MAINNET SAFETY: NO f64 — deterministic integer parsing only
-                                            let satoshi = out["value"]
-                                                .as_u64()
-                                                .map(|v| v as u128)
-                                                .unwrap_or_else(|| {
-                                                    // Fallback: parse as string → u128 (exact, no float rounding)
-                                                    out["value"]
-                                                        .as_str()
-                                                        .and_then(|s| s.parse::<u128>().ok())
-                                                        .unwrap_or(0)
-                                                });
-                                            println!("✅ BTC price [{}]: Found burn output #{}: {} satoshi to {} (block_time={})", label, i, satoshi, BURN_ADDRESS_BTC, block_time);
-                                            return Some((satoshi, block_time));
-                                        }
-                                    }
-                                    println!("❌ BTC price [{}]: No output found to burn address {}. Outputs: {}", label, BURN_ADDRESS_BTC, &body[..body.len().min(500)]);
-                                } else {
-                                    println!("❌ BTC price [{}]: No 'vout' field in TX data. Status field: {:?}", label, json.get("status"));
-                                }
-                            }
-                            Err(e) => {
-                                println!(
-                                    "❌ BTC price [{}]: Failed to parse JSON: {}. Body: {}",
-                                    label,
-                                    e,
-                                    &body[..body.len().min(200)]
-                                );
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        println!(
-                            "❌ BTC price [{}]: Failed to read response body: {}",
-                            label, e
-                        );
-                    }
-                }
-            }
-            Err(e) => {
-                println!(
-                    "❌ BTC price [{}]: HTTP request failed: {} (URL: {})",
-                    label, e, url
-                );
-                println!("   ↳ Possible causes: TX not yet broadcast, Tor proxy down, or mempool.space blocks Tor exit nodes");
-                // Continue to next attempt (direct fallback)
-                continue;
-            }
-        }
-    }
-    None
-}
 
 // --- UTILS & FORMATTING ---
 
@@ -5164,36 +4082,6 @@ fn format_balance_precise(cil_amount: u128) -> String {
     )
 }
 
-/// MAINNET DETERMINISTIC: Convert burn amount + price to CIL using pure u128 integer math.
-/// NO f64 anywhere — inputs are already in integer base units.
-/// Returns Result to prevent silent fund loss on overflow.
-///
-/// # Arguments
-/// * `amt_base` — Amount in base units: wei (10^18 per ETH) or satoshi (10^8 per BTC)
-/// * `price_micro_usd` — Price in micro-USD (10^6 per USD)
-/// * `symbol` — "ETH" or "BTC"
-fn calculate_mint_cil(amt_base: u128, price_micro_usd: u128, symbol: &str) -> Result<u128, String> {
-    // Base divisor: converts base units back to whole-coin equivalent in micro-USD
-    let base_divisor: u128 = if symbol == "ETH" {
-        1_000_000_000_000_000_000 // 10^18 (wei per ETH)
-    } else {
-        100_000_000 // 10^8 (satoshi per BTC)
-    };
-
-    // Integer math: usd_micro = (amt_base * price_micro_usd) / base_divisor
-    let usd_micro = amt_base
-        .checked_mul(price_micro_usd)
-        .ok_or_else(|| "Overflow: burn value × price exceeds calculation range".to_string())?
-        / base_divisor;
-
-    // 1 LOS = $0.01 = 10,000 micro-USD
-    // cil = usd_micro * CIL_PER_LOS / 10,000
-    let result = usd_micro
-        .checked_mul(CIL_PER_LOS)
-        .ok_or_else(|| "Overflow: mint amount exceeds u128".to_string())?
-        / 10_000;
-    Ok(result)
-}
 
 fn format_u128(n: u128) -> String {
     let s = n.to_string();
@@ -6099,7 +4987,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut reward_pool_state = ValidatorRewardPool::new(genesis_ts);
 
     // Register all bootstrap validators as genesis
-    // (eligible for rewards — same rules as any validator)
+    // (tracked for heartbeat/uptime but EXCLUDED from reward distribution —
+    //  all rewards go to public validators for fair distribution)
     for addr in &bootstrap_validators {
         let stake = ledger_state
             .accounts
@@ -6188,11 +5077,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let local_registered_validators: Arc<Mutex<HashSet<String>>> =
         Arc::new(Mutex::new(HashSet::new()));
 
-    let pending_burns = Arc::new(Mutex::new(HashMap::<
-        String,
-        (u128, u128, String, u128, u64, String),
-    >::new()));
-
     let pending_sends = Arc::new(Mutex::new(HashMap::<String, (Block, u128)>::new()));
 
     // Mempool: tracks pending transactions with priority ordering and expiration.
@@ -6201,7 +5085,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Vote deduplication — track which validators have already voted
     // Prevents a single validator from reaching consensus alone by sending multiple votes
-    let burn_voters = Arc::new(Mutex::new(HashMap::<String, HashSet<String>>::new()));
     let send_voters = Arc::new(Mutex::new(HashMap::<String, HashSet<String>>::new()));
 
     // DESIGN Pending checkpoints accumulating multi-validator signatures.
@@ -6542,9 +5425,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // Periodic cleanup of stale pending transactions
-    // Pending sends/burns older than 5 minutes are removed to prevent memory leaks
+    // Pending sends older than 5 minutes are removed to prevent memory leaks
     let cleanup_pending_sends = Arc::clone(&pending_sends);
-    let cleanup_pending_burns = Arc::clone(&pending_burns);
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(60));
         loop {
@@ -6563,22 +5445,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if removed > 0 {
                     println!(
                         "🧹 Cleaned {} stale pending sends (TTL: {}s)",
-                        removed, PENDING_TTL_SECS
-                    );
-                }
-            }
-
-            // Clean stale pending burns by timestamp-based TTL
-            // pending_burns: HashMap<txid, (u128_amt_base, u128_price_micro, String_sym, u128_power, u64_created_at, String_recipient)>
-            if let Ok(mut pb) = cleanup_pending_burns.lock() {
-                let before = pb.len();
-                pb.retain(|_, (_, _, _, _, created_at, _)| {
-                    now.saturating_sub(*created_at) < PENDING_TTL_SECS
-                });
-                let removed = before - pb.len();
-                if removed > 0 {
-                    println!(
-                        "🧹 Cleaned {} stale pending burns (TTL: {}s)",
                         removed, PENDING_TTL_SECS
                     );
                 }
@@ -6716,7 +5582,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let api_ledger = Arc::clone(&ledger);
     let api_tx = tx_out.clone();
     let api_pending_sends = Arc::clone(&pending_sends);
-    let api_pending_burns = Arc::clone(&pending_burns);
     let api_address_book = Arc::clone(&address_book);
     let api_addr = my_address.clone();
     let api_key = Zeroizing::new(keys.secret_key.clone());
@@ -6727,7 +5592,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let api_pk = keys.public_key.clone();
     let api_bootstrap = bootstrap_validators.clone();
     let api_reward_pool = Arc::clone(&reward_pool);
-    let api_burn_voters = Arc::clone(&burn_voters);
     let api_validator_endpoints = Arc::clone(&validator_endpoints);
     let api_mempool = Arc::clone(&mempool_pool);
     let api_local_validators = Arc::clone(&local_registered_validators);
@@ -6768,7 +5632,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ledger: api_ledger,
             tx_out: api_tx,
             pending_sends: api_pending_sends,
-            pending_burns: api_pending_burns,
             address_book: api_address_book,
             my_address: api_addr,
             secret_key: api_key,
@@ -6779,7 +5642,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             node_public_key: api_pk,
             bootstrap_validators: api_bootstrap,
             reward_pool: api_reward_pool,
-            burn_voters: api_burn_voters,
             validator_endpoints: api_validator_endpoints,
             mempool_pool: api_mempool,
             abft_consensus: api_abft,
@@ -7456,13 +6318,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         for addr in &bootstrap_list {
             let _ = tx_boot.send(format!("DIAL:{}", addr)).await;
             tokio::time::sleep(Duration::from_secs(2)).await;
-            let (s, b) = {
-                let l = safe_lock(&ledger_boot);
-                (
-                    l.distribution.remaining_supply,
-                    l.distribution.total_burned_usd,
-                )
-            };
+            let s = { let l = safe_lock(&ledger_boot); l.distribution.remaining_supply };
             // Include timestamp nonce to prevent GossipSub message deduplication.
             // GossipSub deduplicates by hashing message.data — identical content
             // gets suppressed. Adding epoch_ms ensures each broadcast is unique.
@@ -7471,26 +6327,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap_or_default()
                 .as_millis();
             let _ = tx_boot
-                .send(format!("ID:{}:{}:{}:{}", my_addr_boot, s, b, ts))
+                .send(format!("ID:{}:{}:{}", my_addr_boot, s, ts))
                 .await;
         }
 
         // Wait extra time for GossipSub mesh to form before second broadcast
         tokio::time::sleep(Duration::from_secs(5)).await;
         {
-            let (s, b) = {
-                let l = safe_lock(&ledger_boot);
-                (
-                    l.distribution.remaining_supply,
-                    l.distribution.total_burned_usd,
-                )
-            };
+            let s = { let l = safe_lock(&ledger_boot); l.distribution.remaining_supply };
             let ts = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis();
             let _ = tx_boot
-                .send(format!("ID:{}:{}:{}:{}", my_addr_boot, s, b, ts))
+                .send(format!("ID:{}:{}:{}", my_addr_boot, s, ts))
                 .await;
         }
 
@@ -7513,20 +6363,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         loop {
             interval.tick().await;
             sync_counter += 1;
-            let (s, b, block_count) = {
-                let l = safe_lock(&ledger_boot);
-                (
-                    l.distribution.remaining_supply,
-                    l.distribution.total_burned_usd,
-                    l.blocks.len(),
-                )
-            };
+            let (s, block_count) = { let l = safe_lock(&ledger_boot); (l.distribution.remaining_supply, l.blocks.len()) };
             let ts = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis();
             let _ = tx_boot
-                .send(format!("ID:{}:{}:{}:{}", my_addr_boot, s, b, ts))
+                .send(format!("ID:{}:{}:{}", my_addr_boot, s, ts))
                 .await;
 
             // Periodic state sync request every 30s (2 × 15s ticks)
@@ -7740,9 +6583,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("   bal                   - Check balance");
     println!("   whoami                - Check full address");
     println!("   history               - View transaction history (NEW!)");
-    println!("   burn <eth|btc> <TXID> - Mint LOS from Burn ETH/BTC");
     println!("   send <ID> <AMT>       - Send coins");
-    println!("   supply                - Check total supply & burn");
+    println!("   supply                - Check total supply");
     println!("   peers                 - List active nodes");
     println!("   dial <addr>           - Manual connection");
     println!("   exit                  - Exit application");
@@ -7835,7 +6677,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db_clone = Arc::clone(&database);
     let _metrics_clone = Arc::clone(&metrics);
     let slashing_clone = Arc::clone(&slashing_manager);
-    let burn_voters_clone = Arc::clone(&burn_voters);
     let send_voters_clone = Arc::clone(&send_voters);
     let ve_event = Arc::clone(&validator_endpoints);
     let abft_event = Arc::clone(&abft_consensus);
@@ -7861,7 +6702,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     },
                     "supply" => {
                         let l = safe_lock(&ledger);
-                        println!("📉 Supply: {} LOS | 🔥 Burn: ${}.{:02}", format_u128(l.distribution.remaining_supply / CIL_PER_LOS), l.distribution.total_burned_usd / 100, l.distribution.total_burned_usd % 100);
+                        println!("📉 Remaining Supply: {} LOS", format_u128(l.distribution.remaining_supply / CIL_PER_LOS));
                     },
                     "history" => {
                         let l = safe_lock(&ledger);
@@ -7910,107 +6751,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if p.len() == 2 {
                             let tx = tx_out.clone();
                             let ma = my_address.clone();
-                            let (s, b) = { let l = safe_lock(&ledger); (l.distribution.remaining_supply, l.distribution.total_burned_usd) };
+                            let s = { let l = safe_lock(&ledger); l.distribution.remaining_supply };
                             let target = p[1].to_string();
                             tokio::spawn(async move {
                                 let _ = tx.send(format!("DIAL:{}", target)).await;
                                 tokio::time::sleep(Duration::from_secs(2)).await;
                                 let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
-                                let _ = tx.send(format!("ID:{}:{}:{}:{}", ma, s, b, ts)).await;
+                                let _ = tx.send(format!("ID:{}:{}:{}", ma, s, ts)).await;
                             });
-                        }
-                    },
-                    "burn" => {
-                        if p.len() == 3 {
-                            let coin_type = p[1].to_lowercase();
-                            let raw_txid = p[2].to_string();
-
-                            // 1. SANITIZE TXID (Important: 0xABC == abc)
-                            let clean_txid = raw_txid.trim().trim_start_matches("0x").to_lowercase();
-
-                            // Validate TXID format
-                            if clean_txid.is_empty() || clean_txid.len() > 128 || !clean_txid.chars().all(|c| c.is_ascii_hexdigit()) {
-                                println!("❌ Invalid TXID format: must be a non-empty hex string (max 128 chars)");
-                                continue;
-                            }
-
-                            let link_to_search = format!("{}:{}", coin_type.to_uppercase(), clean_txid);
-
-                            // 2. DEADLOCK Check Ledger and Pending separately (never hold both)
-                            let is_already_minted = {
-                                let l = safe_lock(&ledger);
-                                l.blocks.values().any(|b| {
-                                    b.block_type == los_core::BlockType::Mint &&
-                                    (b.link == link_to_search || b.link.contains(&clean_txid))
-                                })
-                            }; // L dropped
-                            // Atomic check-and-insert for burn race condition.
-                            // Previously, is_pending check and insert were separate lock scopes,
-                            // allowing two concurrent burn requests for the same TXID to both
-                            // pass the check and insert, causing double-mint.
-                            let is_pending = {
-                                let pb = safe_lock(&pending_burns);
-                                pb.contains_key(&clean_txid)
-                            };
-
-                            if is_already_minted {
-                                println!("❌ Failed: This TXID is already registered in Ledger (Double Claim prevented)!");
-                                continue;
-                            }
-
-                            if is_pending {
-                                println!("⏳ Please wait: This TXID is currently in network verification queue!");
-                                continue;
-                            }
-
-                            // 4. Fetch external prices for burn calculation
-                            println!("\u{1f4ca} Fetching prices for {}...", coin_type.to_uppercase());
-
-                            let (ep, bp) = get_crypto_prices().await;
-
-                            let res = if coin_type == "eth" {
-                                verify_eth_burn_tx(&clean_txid).await.map(|(a, bt)| (a, ep, "ETH", bt))
-                            } else if coin_type == "btc" {
-                                verify_btc_burn_tx(&clean_txid).await.map(|(a, bt)| (a, bp, "BTC", bt))
-                            } else {
-                                println!("❌ Error: Coin '{}' not supported.", coin_type);
-                                None
-                            };
-
-                            if let Some((amt, prc, sym, block_time)) = res {
-                                // SECURITY: 25-day rolling window — reject burn TXs older than 25 days
-                                let now_secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
-                                if block_time == 0 {
-                                    println!("❌ Cannot determine burn TX confirmation time — unconfirmed or API error");
-                                    continue;
-                                }
-                                if now_secs.saturating_sub(block_time) > BURN_TX_MAX_AGE_SECS {
-                                    println!("❌ Burn TX too old: confirmed {} secs ago (max {} secs / 25 days)", now_secs.saturating_sub(block_time), BURN_TX_MAX_AGE_SECS);
-                                    continue;
-                                }
-
-                                println!("✅ Valid TXID: {} {} (base units) detected.", amt, sym);
-
-                                // Start burn power at 0 — sender doesn't self-vote.
-                                // Only distinct external validators contribute voting power via VOTE_RES.
-                                let my_power: u128 = 0;
-
-                                // Insert to pending with initial Power = our balance
-                                safe_lock(&pending_burns).insert(clean_txid.clone(), (amt, prc, sym.to_string(), my_power, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(), my_address.clone()));
-
-                                // 5. BROADCAST TO NETWORK
-                                let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
-                                let msg = format!("VOTE_REQ:{}:{}:{}:{}", coin_type, clean_txid, my_address, ts);
-                                let _ = tx_out.send(msg).await;
-
-                                println!("📡 VOTE_REQ broadcast sent (Initial Power: {} LOS)", my_power);
-
-                                // INFO: If my_power >= 20, minting process will be auto-triggered in network loop
-                            } else {
-                                println!("❌ Failed: Oracle could not find burn proof for this TXID.");
-                            }
-                        } else {
-                            println!("💡 Use format: burn <eth/btc> <txid>");
                         }
                     },
                     "send" => {
@@ -8116,10 +6864,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let NetworkEvent::NewBlock(data) = event {
                         if data.starts_with("ID:") {
                             let parts: Vec<&str> = data.split(':').collect();
-                            if parts.len() >= 4 {
+                            if parts.len() >= 3 {
                                 let full = parts[1].to_string();
                                 let rem_s = parts[2].parse::<u128>().unwrap_or(0);
-                                let tot_b = parts[3].parse::<u128>().unwrap_or(0);
 
                                 if full != my_address {
                                     let short = get_short_addr(&full);
@@ -8159,7 +6906,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                     // DEADLOCK Never hold L and PS simultaneously.
                                     // Step 1: Ledger operations (L lock only)
-                                    let (supply_data, full_state_json) = {
+                                    let (supply_remaining, full_state_json) = {
                                         let mut l = safe_lock(&ledger);
 
                                         // Don't blindly trust peer's remaining_supply.
@@ -8179,8 +6926,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             if rem_s >= calculated_remaining.saturating_sub(tolerance)
                                                 && rem_s <= calculated_remaining.saturating_add(tolerance) {
                                                 l.distribution.remaining_supply = calculated_remaining;
-                                                l.distribution.total_burned_usd = tot_b;
-                                                SAVE_DIRTY.store(true, Ordering::Release);
+                                                                SAVE_DIRTY.store(true, Ordering::Release);
                                                 println!("🔄 Supply Verified & Synced with Peer: {} (calculated: {})", short, calculated_remaining);
                                             } else {
                                                 println!("⚠️ Supply sync rejected from {}: peer claims {} but we calculated {}",
@@ -8190,7 +6936,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                         println!("🤝 Handshake: {}", short);
 
-                                        let supply = (l.distribution.remaining_supply, l.distribution.total_burned_usd);
+                                        let supply = l.distribution.remaining_supply;
                                         let json = if is_new { serde_json::to_string(&*l).ok() } else { None };
                                         (supply, json)
                                     }; // L dropped
@@ -8213,9 +6959,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                     // Step 3: Send identity and state to new peer
                                     if is_new {
-                                        let (s, b) = supply_data;
+                                        let s = supply_remaining;
                                         let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
-                                        let _ = tx_out.send(format!("ID:{}:{}:{}:{}", my_address, s, b, ts)).await;
+                                        let _ = tx_out.send(format!("ID:{}:{}:{}", my_address, s, ts)).await;
 
                                         // Only send full state sync for small networks or small ledgers
                                         // This avoids flooding gossipsub with huge payloads in larger networks
@@ -8451,105 +7197,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                 }
                             }
-                        } else if data.starts_with("VOTE_REQ:") {
-                            // FORMAT: VOTE_REQ:coin_type:txid:requester_address:timestamp
-                            // Limit concurrent VOTE_REQ tasks via semaphore.
-                            // Without this, an attacker flooding VOTE_REQ messages creates unbounded
-                            // tokio tasks (each making HTTP price API calls), exhausting memory/FDs → DoS.
-                            static VOTE_SEMAPHORE: std::sync::LazyLock<Arc<tokio::sync::Semaphore>> =
-                                std::sync::LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(16)));
-                            let parts: Vec<&str> = data.split(':').collect();
-                            if parts.len() == 5 {
-                                let coin_type = parts[1].to_string();
-                                let txid = parts[2].to_string();
-                                let requester = parts[3].to_string();
 
-                                let tx_vote = tx_out.clone();
-                                let ledger_ref = Arc::clone(&ledger);
-                                let my_addr_clone = my_address.clone();
-                                // Wrap cloned secret key in Zeroizing for automatic
-                                // zeroing when the async task completes (prevents key leakage in heap)
-                                let vote_sk = secret_key.clone();
-                                let vote_pk = keys.public_key.clone();
-
-                                let sem = VOTE_SEMAPHORE.clone();
-                                tokio::spawn(async move {
-                                    // Acquire semaphore permit — blocks if 16 tasks already running
-                                    let _permit = match sem.acquire().await {
-                                        Ok(p) => p,
-                                        Err(_) => return, // Semaphore closed
-                                    };
-                                    // 1. Check Ledger: Ensure this TXID has never been minted before
-                                    let link_to_check = format!("{}:{}", coin_type.to_uppercase(), txid);
-                                    let already_exists = {
-                                        let l = safe_lock(&ledger_ref);
-                                        l.blocks.values().any(|b| b.block_type == los_core::BlockType::Mint && (b.link == link_to_check || b.link.contains(&txid)))
-                                    };
-
-                                    if already_exists {
-                                        // IF DOUBLE CLAIM DETECTED FROM OTHER PEER
-                                        if requester != my_addr_clone {
-                                            println!("🚨 DOUBLE CLAIM DETECTED: {} trying to claim existing TXID!", get_short_addr(&requester));
-                                            // Sign SLASH_REQ with Dilithium5
-                                            let slash_ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
-                                            let slash_payload = format!("SLASH:{}:{}:{}:{}", requester, txid, my_addr_clone, slash_ts);
-                                            if let Ok(slash_sig) = los_crypto::sign_message(slash_payload.as_bytes(), &vote_sk) {
-                                                let slash_msg = format!("SLASH_REQ:{}:{}:{}:{}:{}:{}", requester, txid, my_addr_clone, slash_ts, hex::encode(&slash_sig), hex::encode(&vote_pk));
-                                                let _ = tx_vote.send(slash_msg).await;
-                                            } else {
-                                                eprintln!("⚠️ Signing failed for SLASH_REQ — skipping");
-                                            }
-                                        }
-                                        return;
-                                    }
-
-                                    // 2. External Chain Verification: Verify TXID to Blockchain Explorer
-                                    let verify_result = if coin_type == "eth" {
-                                        verify_eth_burn_tx(&txid).await
-                                    } else {
-                                        verify_btc_burn_tx(&txid).await
-                                    };
-
-                                    let ts_res = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
-
-                                    // SECURITY: 25-day rolling window check
-                                    let amount_opt: Option<(u128, u64)> = verify_result.and_then(|(amt, block_time)| {
-                                        let now_secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
-                                        if block_time == 0 {
-                                            println!("⚠️ VOTE_RES: Cannot determine TX confirmation time — treating as invalid");
-                                            return None;
-                                        }
-                                        if now_secs.saturating_sub(block_time) > BURN_TX_MAX_AGE_SECS {
-                                            println!("⚠️ VOTE_RES: TX too old ({} secs ago, max {})", now_secs.saturating_sub(block_time), BURN_TX_MAX_AGE_SECS);
-                                            return None;
-                                        }
-                                        Some((amt, block_time))
-                                    });
-
-                                    // 3. Decision Logic: YES (Valid) or SLASH (Fake)
-                                    if amount_opt.is_some() {
-                                        // VALID TXID: Send VOTE_RES YES (signed with Dilithium5)
-                                        let payload = format!("{}:{}:YES:{}:{}", txid, requester, my_addr_clone, ts_res);
-                                        if let Ok(sig) = los_crypto::sign_message(payload.as_bytes(), &vote_sk) {
-                                            let response = format!("VOTE_RES:{}:{}:YES:{}:{}:{}:{}", txid, requester, my_addr_clone, ts_res, hex::encode(&sig), hex::encode(&vote_pk));
-                                            let _ = tx_vote.send(response).await;
-                                        } else {
-                                            eprintln!("⚠️ Signing failed for VOTE_RES — skipping vote");
-                                        }
-
-                                        println!("🗳️ Casting YES vote for TXID: {} from {}",
-                                            &txid[..8],
-                                            get_short_addr(&requester)
-                                        );
-                                    } else {
-                                        // SECURITY P2-6: TXID not verified — ABSTAIN instead of SLASH
-                                        // The API may be unreachable, not necessarily fraud.
-                                        // Double-claim detection (above) already handles confirmed fraud.
-                                        println!("⚠️ TXID {} from {} could not be verified — abstaining (API may be down)",
-                                            &txid[..std::cmp::min(8, txid.len())], get_short_addr(&requester));
-                                    }
-                                });
-                            }
                         } else if data.starts_with("SLASH_REQ:") {
                             // FORMAT: SLASH_REQ:cheater_address:fake_txid:proposer_addr:timestamp:signature:pubkey (7 parts)
                             // Verify Dilithium5 signature on SLASH_REQ (was unsigned).
@@ -8603,7 +7251,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 // Step 2: Independently verify the evidence
                                 // SECURITY P1-1: Check if cheater's TXID was already legitimately minted
                                 // Evidence is valid if: cheater exists AND the TXID was NOT found in any
-                                // Mint block's link field (i.e., it was never successfully burned/minted)
+                                // Mint block's link field (i.e., it was never successfully minted)
                                 let is_valid_evidence = {
                                     let l = safe_lock(&ledger);
                                     let cheater_exists = l.accounts.contains_key(&cheater_addr);
@@ -8708,179 +7356,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     println!("⏳ Slash proposal registered, waiting for more validator votes...");
                                 }
                             }
-                        } else if data.starts_with("VOTE_RES:") {
-                            let parts: Vec<&str> = data.split(':').collect();
 
-                            // FORMAT: VOTE_RES:txid:requester:YES:voter_addr:timestamp:signature:pubkey (8 parts)
-                            if parts.len() == 8 {
-                                let txid = parts[1].to_string();
-                                let _requester = parts[2].to_string();
-                                let voter_addr = parts[4].to_string();
-                                let sig_hex = parts[6];
-                                let pk_hex = parts[7];
-
-                                // SECURITY P0-1: Verify Dilithium5 signature on vote
-                                let payload = format!("{}:{}:YES:{}:{}", parts[1], parts[2], parts[4], parts[5]);
-                                let sig_bytes = hex::decode(sig_hex).unwrap_or_default();
-                                let pk_bytes = hex::decode(pk_hex).unwrap_or_default();
-
-                                if !los_crypto::verify_signature(payload.as_bytes(), &sig_bytes, &pk_bytes) {
-                                    println!("🚨 Rejected VOTE_RES: invalid signature from {}", get_short_addr(&voter_addr));
-                                    continue;
-                                }
-                                // Verify pubkey matches claimed voter address
-                                let derived_addr = los_crypto::public_key_to_address(&pk_bytes);
-                                if derived_addr != voter_addr {
-                                    println!("🚨 Rejected VOTE_RES: pubkey mismatch for {}", get_short_addr(&voter_addr));
-                                    continue;
-                                }
-
-                                // Removed `requester == my_address` guard (same fix as send consensus).
-                                // The txid_exists check already correctly identifies the originating node.
-                                {
-                                    // DEADLOCK Never hold PB and L simultaneously.
-                                    // Step 1: Check if txid exists in pending (PB lock only)
-                                    let txid_exists = {
-                                        let pending = safe_lock(&pending_burns);
-                                        pending.contains_key(&txid)
-                                    }; // PB dropped
-
-                                    if !txid_exists { continue; }
-
-                                    // Step 2: Get voter balance (L lock only)
-                                    let (voter_balance, active_vc) = {
-                                        let l_guard = safe_lock(&ledger);
-                                        // Use in-memory state (authoritative)
-                                        // REMOVED: disk re-read that overwrote in-memory state
-                                        let bal = l_guard.accounts.get(&voter_addr)
-                                            .map(|a| a.balance)
-                                            .unwrap_or(0);
-                                        // Only count accounts with is_validator=true.
-                                        // Treasury wallets inflate vc, making quorum impossible.
-                                        let vc = l_guard.accounts.values().filter(|a| a.is_validator && a.balance >= MIN_VALIDATOR_STAKE_CIL).count();
-                                        (bal, vc)
-                                    }; // L dropped
-
-                                    // --- LINEAR VOTING: Power = Stake (Sybil-Neutral) ---
-                                    let voter_power_linear = calculate_voting_power(voter_balance);
-                                    let voter_power_display = voter_balance / CIL_PER_LOS;
-
-                                    if voter_power_linear == 0 {
-                                        println!("⚠️ Vote ignored: {} (Stake {} LOS insufficient, need 1000 LOS min)",
-                                            get_short_addr(&voter_addr),
-                                            voter_power_display
-                                        );
-                                        continue;
-                                    }
-
-                                    // Step 3: Update votes and check threshold (PB lock only)
-                                    let consensus_data = {
-                                        // Vote deduplication — prevent single validator from reaching consensus alone
-                                        let mut voters = safe_lock(&burn_voters_clone);
-                                        let voter_set = voters.entry(txid.clone()).or_default();
-                                        if voter_set.contains(&voter_addr) {
-                                            println!("⚠️ Duplicate burn vote from {} — ignored", get_short_addr(&voter_addr));
-                                            continue;
-                                        }
-                                        voter_set.insert(voter_addr.clone());
-                                        let distinct_count = voter_set.len();
-                                        drop(voters);
-
-                                        let mut pending = safe_lock(&pending_burns);
-                                        if let Some(burn_info) = pending.get_mut(&txid) {
-                                            // Normalize CIL→LOS before * 1000 scaling.
-                                            // calculate_voting_power() returns raw CIL (e.g. 10^14 for 1000 LOS stake).
-                                            // Threshold is in LOS-scaled units (20,000 = 20 LOS × 1000).
-                                            // Without normalization, a single minimum-stake vote produces 10^17,
-                                            // trivially exceeding the threshold and making it a dead check.
-                                            let voter_power_los = voter_power_linear / CIL_PER_LOS;
-                                            let power_scaled = voter_power_los * 1000;
-                                            burn_info.3 += power_scaled;
-
-                                            let min_voters = if !testnet_config::get_testnet_config().should_enable_consensus() { 1 } else { min_distinct_voters(active_vc) };
-                                            println!("📩 Vote Received: {} (Stake: {} LOS, Power: {}) | Progress: {}/{} (Voters: {}/{})",
-                                                get_short_addr(&voter_addr),
-                                                voter_power_display,
-                                                voter_power_los,
-                                                burn_info.3,
-                                                BURN_CONSENSUS_THRESHOLD,
-                                                distinct_count,
-                                                min_voters
-                                            );
-
-                                            let threshold = if !testnet_config::get_testnet_config().should_enable_consensus() { TESTNET_FUNCTIONAL_THRESHOLD } else { BURN_CONSENSUS_THRESHOLD };
-                                            if burn_info.3 >= threshold && distinct_count >= min_voters {
-                                                println!("✅ Linear Stake Consensus Achieved (Total Power: {}, Voters: {})!", burn_info.3, distinct_count);
-                                                let (amt_coin, price, sym, _, _, recipient) = burn_info.clone();
-                                                Some((amt_coin, price, sym, recipient))
-                                            } else { None }
-                                        } else { None }
-                                    }; // PB dropped
-
-                                    // Step 4: If consensus reached, mint (L lock only)
-                                    if let Some((amt_coin, price, sym, mint_recipient)) = consensus_data {
-                                        // Pure integer math via calculate_mint_cil()
-                                        let los_to_mint = match calculate_mint_cil(amt_coin, price, &sym) {
-                                            Ok(v) => v,
-                                            Err(e) => {
-                                                eprintln!("❌ Mint calculation overflow: {}", e);
-                                                continue;
-                                            }
-                                        };
-                                        if los_to_mint == 0 { continue; } // too small
-
-                                        let mint_gossip: Option<String> = {
-                                            let mut l = safe_lock(&ledger);
-
-                                            // Ensure recipient account exists
-                                            if !l.accounts.contains_key(&mint_recipient) {
-                                                l.accounts.insert(mint_recipient.clone(), AccountState {
-                                                    head: "0".to_string(), balance: 0, block_count: 0, is_validator: false,
-                                                });
-                                            }
-                                            let state = l.accounts.get(&mint_recipient).cloned().unwrap_or(AccountState {
-                                                head: "0".to_string(), balance: 0, block_count: 0, is_validator: false,
-                                            });
-
-                                            let mut mint_blk = Block {
-                                                account: mint_recipient.clone(),
-                                                previous: state.head.clone(),
-                                                block_type: BlockType::Mint,
-                                                amount: los_to_mint,
-                                                link: format!("Src:{}:{}:{}", sym, txid, price),
-                                                signature: "".to_string(),
-                                                public_key: hex::encode(&keys.public_key),
-                                                work: 0,
-                                                timestamp: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
-                                                fee: 0,
-                                            };
-
-                                            solve_pow(&mut mint_blk);
-                                            let signing_hash = mint_blk.signing_hash();
-                                            mint_blk.signature = match try_sign_hex(signing_hash.as_bytes(), &secret_key) {
-                                                Ok(sig) => sig,
-                                                Err(e) => { eprintln!("❌ Mint signing failed: {} — skipping", e); continue; }
-                                            };
-
-                                            match l.process_block(&mint_blk) {
-                                                Ok(_) => {
-                                                    SAVE_DIRTY.store(true, Ordering::Release);
-                                                    println!("🔥 Minting Successful: +{} LOS to {}!", format_u128(los_to_mint / CIL_PER_LOS), get_short_addr(&mint_recipient));
-                                                    Some(serde_json::to_string(&mint_blk).unwrap_or_default())
-                                                },
-                                                Err(e) => { println!("❌ Failed to process Mint block: {}", e); None },
-                                            }
-                                        }; // L dropped
-                                        if let Some(msg) = mint_gossip {
-                                            let _ = tx_out.send(msg).await;
-                                        }
-
-                                        // Step 5: Remove from pending (PB lock only)
-                                        safe_lock(&pending_burns).remove(&txid);
-                                        safe_lock(&burn_voters_clone).remove(&txid);
-                                    }
-                                }
-                            }
                         } else if data.starts_with("CONFIRM_REQ:") {
                             let parts: Vec<&str> = data.split(':').collect();
                             // Support both V1 (5 parts) and V2 (6 parts with block data)
@@ -10121,6 +8597,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     println!("🚫 Rejected MINE_BLOCK: not a MINE: Mint block");
                                     continue;
                                 }
+                                // Genesis bootstrap validators cannot mine.
+                                // All mining rewards are reserved for public miners.
+                                if bootstrap_validators.contains(&mint_blk.account) {
+                                    println!("🚫 Rejected MINE_BLOCK: genesis bootstrap validator {} cannot mine",
+                                        get_short_addr(&mint_blk.account));
+                                    continue;
+                                }
                                 // Verify signature
                                 if mint_blk.signature.is_empty() || mint_blk.public_key.is_empty() {
                                     println!("🚫 Rejected unsigned MINE_BLOCK from P2P");
@@ -10479,8 +8962,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         }
 
                                         if inc.block_type == BlockType::Mint {
-                                            let burn_val = inc.amount / CIL_PER_LOS;
-                                            println!("🔥 Network Mint Verified: +{} LOS", format_u128(burn_val));
+                                            let mint_val = inc.amount / CIL_PER_LOS;
+                                            println!("✅ Network Mint Verified: +{} LOS", format_u128(mint_val));
                                         }
                                         SAVE_DIRTY.store(true, Ordering::Release);
                                         println!("✅ Block Verified: {:?} from {}", inc.block_type, get_short_addr(&inc.account));

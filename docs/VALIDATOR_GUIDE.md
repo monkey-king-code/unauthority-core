@@ -409,8 +409,7 @@ Validators are held accountable for misbehavior:
 | Offense | Detection | Penalty |
 |---|---|---|
 | **Double-signing** | Conflicting block signatures | 100% stake slashed, permanent ban |
-| **Fake burn TXID** | Multi-validator verification | 100% stake slashed, permanent ban |
-| **Oracle manipulation** | Outlier detection (>20% from median) | Penalty + exclusion |
+| **Fraudulent transaction** | Multi-validator verification | 100% stake slashed, permanent ban |
 | **Extended downtime** | Uptime tracking (<95% over observation window) | 1% of stake slashed |
 
 ### Check Slashing Status

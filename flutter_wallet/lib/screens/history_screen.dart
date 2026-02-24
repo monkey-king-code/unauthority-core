@@ -82,8 +82,6 @@ class _HistoryScreenState extends State<HistoryScreen> {
 
   String _getTransactionTitle(Transaction tx) {
     if (tx.type.toLowerCase() == 'mint') {
-      if (tx.to.contains('ETH:')) return 'ETH Burn Reward';
-      if (tx.to.contains('BTC:')) return 'BTC Burn Reward';
       return 'Minted';
     }
     if (tx.from == _address) return 'Sent';
@@ -92,16 +90,6 @@ class _HistoryScreenState extends State<HistoryScreen> {
 
   String _getTransactionSubtitle(Transaction tx) {
     if (tx.type.toLowerCase() == 'mint') {
-      if (tx.to.contains('ETH:') || tx.to.contains('BTC:')) {
-        // Extract TXID from burn details
-        final parts = tx.to.split(':');
-        if (parts.length >= 2) {
-          final txid = parts[1];
-          final display =
-              txid.length > 16 ? '${txid.substring(0, 16)}...' : txid;
-          return 'Burn TXID: $display';
-        }
-      }
       return 'System Mint';
     }
 

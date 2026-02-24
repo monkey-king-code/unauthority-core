@@ -28,52 +28,6 @@ class TransactionDetailScreen extends StatelessWidget {
     );
   }
 
-  /// Check if a mint transaction is a burn reward
-  /// Backend stores link as "Src:ETH:txid:price" or legacy "ETH:txid" / "BTC:txid"
-  bool _isBurnReward(Transaction tx) {
-    final to = tx.to;
-    return to.startsWith('Src:ETH:') ||
-        to.startsWith('Src:BTC:') ||
-        to.startsWith('ETH:') ||
-        to.startsWith('BTC:');
-  }
-
-  /// Extract burned coin type (ETH or BTC) from the to/link field
-  String _getBurnCoin(Transaction tx) {
-    final to = tx.to;
-    if (to.startsWith('Src:')) {
-      // Format: "Src:ETH:txid:price"
-      final parts = to.split(':');
-      return parts.length >= 2 ? parts[1].toUpperCase() : '?';
-    }
-    // Legacy: "ETH:txid" or "BTC:txid"
-    return to.split(':').first.toUpperCase();
-  }
-
-  /// Extract original BTC/ETH transaction ID from the to/link field
-  String _getBurnTxid(Transaction tx) {
-    final to = tx.to;
-    if (to.startsWith('Src:')) {
-      // Format: "Src:ETH:txid:price"
-      final parts = to.split(':');
-      return parts.length >= 3 ? parts[2] : '';
-    }
-    // Legacy: "ETH:txid"
-    final parts = to.split(':');
-    return parts.length >= 2 ? parts[1] : '';
-  }
-
-  /// Extract price at time of burn (if available)
-  String _getBurnPrice(Transaction tx) {
-    final to = tx.to;
-    if (to.startsWith('Src:')) {
-      // Format: "Src:ETH:txid:price"
-      final parts = to.split(':');
-      return parts.length >= 4 ? parts[3] : '';
-    }
-    return '';
-  }
-
   @override
   Widget build(BuildContext context) {
     final isOutgoing = transaction.from == currentAddress;
@@ -82,17 +36,11 @@ class TransactionDetailScreen extends StatelessWidget {
     final formattedDate = DateFormat('MMM dd, yyyy').format(dateTime);
     final formattedTime = DateFormat('HH:mm:ss').format(dateTime);
 
-    final isBurn = transaction.type == 'mint' && _isBurnReward(transaction);
-
     // Determine status display
     final Color statusColor;
     final IconData statusIcon;
     final String statusLabel;
-    if (isBurn) {
-      statusColor = Colors.orange;
-      statusIcon = Icons.local_fire_department;
-      statusLabel = '${_getBurnCoin(transaction)} BURN REWARD';
-    } else if (isOutgoing) {
+    if (isOutgoing) {
       statusColor = Colors.red;
       statusIcon = Icons.arrow_upward;
       statusLabel = 'SENT';
@@ -193,88 +141,6 @@ class TransactionDetailScreen extends StatelessWidget {
           ),
 
           const SizedBox(height: 16),
-
-          // Burn Details — shown for mint/burn reward transactions
-          // Backend stores link as "Src:{COIN}:{TXID}:{PRICE}" or "ETH:{TXID}" / "BTC:{TXID}"
-          if (transaction.type == 'mint' && _isBurnReward(transaction)) ...[
-            Card(
-              color: Colors.orange.withValues(alpha: 0.1),
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        const Icon(Icons.local_fire_department,
-                            color: Colors.orange, size: 24),
-                        const SizedBox(width: 8),
-                        Text(
-                          '${_getBurnCoin(transaction)} Burn Reward',
-                          style: const TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.orange,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    _BurnDetailRow(
-                      label: 'Burned Coin',
-                      value: _getBurnCoin(transaction),
-                      icon: _getBurnCoin(transaction) == 'BTC'
-                          ? Icons.currency_bitcoin
-                          : Icons.diamond,
-                    ),
-                    const Divider(height: 16),
-                    Row(
-                      children: [
-                        const Icon(Icons.tag, size: 18, color: Colors.grey),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const Text('Original TX ID',
-                                  style: TextStyle(
-                                      fontSize: 11, color: Colors.grey)),
-                              Text(
-                                _getBurnTxid(transaction),
-                                style: const TextStyle(
-                                  fontSize: 11,
-                                  fontFamily: 'monospace',
-                                ),
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ],
-                          ),
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.copy, size: 18),
-                          onPressed: () => _copyToClipboard(
-                            context,
-                            _getBurnTxid(transaction),
-                            'Burn TX ID',
-                          ),
-                        ),
-                      ],
-                    ),
-                    if (_getBurnPrice(transaction).isNotEmpty) ...[
-                      const Divider(height: 16),
-                      _BurnDetailRow(
-                        label: 'Price at Burn',
-                        value: '\$${_getBurnPrice(transaction)} USD',
-                        icon: Icons.attach_money,
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 16),
-          ],
 
           // TX Hash (Block Hash) — tap to copy for Explorer
           if (transaction.txid.isNotEmpty) ...[
@@ -460,34 +326,6 @@ class _DetailRow extends StatelessWidget {
             ),
         ],
       ),
-    );
-  }
-}
-
-class _BurnDetailRow extends StatelessWidget {
-  final String label;
-  final String value;
-  final IconData icon;
-
-  const _BurnDetailRow({
-    required this.label,
-    required this.value,
-    required this.icon,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Icon(icon, size: 18, color: Colors.grey),
-        const SizedBox(width: 8),
-        Text(label, style: const TextStyle(fontSize: 12, color: Colors.grey)),
-        const Spacer(),
-        Text(
-          value,
-          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
-        ),
-      ],
     );
   }
 }

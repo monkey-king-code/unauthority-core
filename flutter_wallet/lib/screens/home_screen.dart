@@ -436,7 +436,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                 // Direction label
                                 String dirLabel;
                                 if (isMint) {
-                                  dirLabel = 'Faucet / Burn Reward';
+                                  dirLabel = 'Minted';
                                 } else if (isSent) {
                                   dirLabel =
                                       'To: ${otherParty.length > 20 ? '${otherParty.substring(0, 8)}...${otherParty.substring(otherParty.length - 8)}' : otherParty}';

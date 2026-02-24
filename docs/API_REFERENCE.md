@@ -32,7 +32,7 @@ All errors return:
 - [Block Endpoints](#block-endpoints)
 - [Transaction Endpoints](#transaction-endpoints)
 - [Validator Endpoints](#validator-endpoints)
-- [Consensus & Oracle](#consensus--oracle)
+- [Consensus](#consensus)
 - [Smart Contract Endpoints](#smart-contract-endpoints)
 - [Network Endpoints](#network-endpoints)
 - [Utility Endpoints](#utility-endpoints)
@@ -60,7 +60,7 @@ Node status overview with all available endpoints.
   "description": "Decentralized blockchain with aBFT consensus",
   "endpoints": {
     "health": "GET /health - Health check",
-    "supply": "GET /supply - Total supply, burned, remaining",
+    "supply": "GET /supply - Total supply and remaining",
     "bal": "GET /bal/{address} - Account balance (short alias)",
     "send": "POST /send {from, target, amount} - Send transaction",
     "...": "..."
@@ -113,7 +113,7 @@ Detailed node information.
 
 ### GET `/supply`
 
-Total, circulating, and burned supply information.
+Total supply and remaining supply information.
 
 **Response:**
 ```json
@@ -123,8 +123,7 @@ Total, circulating, and burned supply information.
   "circulating_supply": "777823.00000000000",
   "circulating_supply_cil": 77782300000000000,
   "remaining_supply": "21158413.00000000000",
-  "remaining_supply_cil": 2115841300000000000,
-  "total_burned_usd": 0
+  "remaining_supply_cil": 2115841300000000000
 }
 ```
 
@@ -349,47 +348,6 @@ Search across blocks, accounts, and transaction hashes.
 
 ---
 
-## Transaction: Burn Bridge
-
-### POST `/burn`
-
-Burn ETH or BTC to receive LOS.
-
-**Request:**
-```json
-{
-  "coin_type": "eth",
-  "txid": "0xabc123def456...",
-  "recipient_address": "LOSX7dStdPkS9U4MFCmDQfpmvrbMa5WAZfQX1"
-}
-```
-
-**Fields:**
-- `coin_type` — `"eth"` or `"btc"`
-- `txid` — Transaction hash of the burn on the source chain
-- `recipient_address` — LOS address to receive minted tokens
-
-**Process:**
-1. Submit the burn TXID
-2. Multi-validator oracle consensus verifies the burn amount and price
-3. LOS is minted to the recipient proportional to USD value burned
-4. All arithmetic uses u128 integer math (prices in micro-USD, amounts in wei/satoshi)
-
-**Response:**
-```json
-{
-  "status": "pending",
-  "txid": "0xabc123...",
-  "msg": "Burn submitted. Awaiting oracle consensus."
-}
-```
-
-### POST `/reset-burn-txid`
-
-Reset a stuck burn TXID (testnet only — disabled on mainnet).
-
----
-
 ## Validator Endpoints
 
 ### GET `/validators`
@@ -443,7 +401,7 @@ Remove yourself from the validator set.
 
 ---
 
-## Consensus & Oracle
+## Consensus
 
 ### GET `/consensus`
 
@@ -580,7 +538,6 @@ Current mempool statistics.
 ```json
 {
   "pending_transactions": 0,
-  "pending_burns": 0,
   "queued": 0
 }
 ```
@@ -1016,5 +973,4 @@ The `los-cli` binary provides command-line access to all node functionality.
 |---|---|
 | `/faucet` | 1 per address per 24 hours |
 | `/send` | Anti-spam throttle per address |
-| `/burn` | 1 per TXID (globally deduplicated) |
 | All endpoints | Per-IP rate limiting |

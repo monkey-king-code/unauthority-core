@@ -24,7 +24,7 @@ Unauthority is a block-lattice (DAG) blockchain where each account maintains its
 │                          │                                    │
 │  ┌───────────────────────▼──────────────────────────────┐    │
 │  │           Shared State (Arc<RwLock<>>)                │    │
-│  │   Ledger · Mempool · Oracle · Slashing · Rewards     │    │
+│  │   Ledger · Mempool · Slashing · Rewards               │    │
 │  └──────────────────────────────────────────────────────┘    │
 │                          │                                    │
 │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌────────────┐      │
@@ -76,7 +76,7 @@ Core blockchain primitives and state management. No I/O — pure logic.
 | Module | Purpose |
 |---|---|
 | `lib.rs` | `Block`, `AccountState`, `Ledger`, `BlockType`, PoW, genesis loading |
-| `distribution.rs` | Supply distribution tracking, burn accounting (u128 arithmetic) |
+| `distribution.rs` | Supply distribution tracking (u128 arithmetic) |
 | `validator_config.rs` | Validator configuration structures |
 | `validator_rewards.rs` | Reward pool distribution: `budget × stake / Σ(all_stakes)` (linear) |
 | `pow_mint.rs` | PoW mining engine: SHA3-256, epoch management, proof verification |
@@ -95,7 +95,7 @@ aBFT consensus engine, validator coordination, and accountability.
 |---|---|
 | `abft.rs` | Asynchronous BFT consensus rounds, block finalization |
 | `checkpoint.rs` | Periodic state checkpointing (RocksDB snapshots) |
-| `slashing.rs` | Validator slashing: double-sign, fake burns, oracle manipulation |
+| `slashing.rs` | Validator slashing: double-sign, downtime, fraud |
 | `voting.rs` | Linear voting: `vote_weight = stake` (1 LOS = 1 vote, Sybil-neutral) |
 
 ### los-network
@@ -138,7 +138,7 @@ Main validator binary — the heart of the system. Single binary, ~9000 lines.
 
 | Module | Purpose |
 |---|---|
-| `main.rs` | REST API (Warp), P2P gossip, burn pipeline, epoch processing, CLI REPL |
+| `main.rs` | REST API (Warp), P2P gossip, epoch processing, CLI REPL |
 | `grpc_server.rs` | gRPC API (Tonic) for structured client access |
 | `genesis.rs` | Genesis config parsing, validation, account initialization |
 | `db.rs` | RocksDB database layer for persistent ledger storage |
@@ -157,7 +157,6 @@ WASM Virtual Machine for smart contracts (Unauthority Virtual Machine — UVM).
 |---|---|
 | `lib.rs` | WASM runtime, contract deployment, execution, state management |
 | `host.rs` | 16 host functions injected into WASM: state, events, transfers, crypto |
-| `oracle_connector.rs` | Oracle price feed interface for smart contracts |
 
 **Execution pipeline:**
 1. **Hosted WASM** (Cranelift + deterministic gas metering via `wasmer-middlewares`)
@@ -230,7 +229,6 @@ Account C:  [Mint 100] ──→ [Receive 20 from A] ──→ [Receive 10 from 
 | `Send` | Debit from sender | Recipient address |
 | `Receive` | Credit to receiver | Hash of the Send block |
 | `Mint` | Token creation (genesis, PoW mining reward) | Source reference (`MINE:epoch:nonce`) |
-| `Burn` | Token destruction (burning LOS) | Burn reference |
 | `Change` | Representative/validator delegation | New representative |
 
 ### Block Fields
@@ -239,7 +237,7 @@ Account C:  [Mint 100] ──→ [Receive 20 from A] ──→ [Receive 10 from 
 Block {
     account:    String,    // Owner address (LOS...)
     previous:   String,    // Hash of previous block in this account's chain
-    block_type: BlockType, // Send | Receive | Mint | Burn | Change
+    block_type: BlockType, // Send | Receive | Mint | Change
     amount:     u128,      // Amount in CIL (atomic units)
     link:       String,    // Context-dependent reference
     signature:  String,    // Dilithium5 hex signature
@@ -291,9 +289,9 @@ Block {
 |---|---|
 | **Cryptography** | Dilithium5 (NIST PQC) — 256-bit classical, 128-bit quantum security |
 | **Consensus** | aBFT — tolerates f < n/3 Byzantine validators |
-| **Network** | Tor-only — no IP exposure, `.onion` hidden services |
+| **Network** | Tor recommended — .onion hidden services or clearnet |
 | **Voting** | Linear voting: 1 LOS = 1 vote (Sybil-neutral) |
 | **Determinism** | u128 integer math everywhere — zero `f32`/`f64` in consensus |
 | **Anti-Spam** | Proof-of-Work nonce per block + flat BASE_FEE_CIL |
-| **Accountability** | Slashing for double-signing, fake burns, oracle manipulation |
-| **Privacy** | No KYC, no clearnet, Tor SOCKS5 for all traffic |
+| **Accountability** | Slashing for double-signing and fraud |
+| **Privacy** | No KYC; Tor recommended for all traffic |

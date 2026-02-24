@@ -73,11 +73,7 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [1.0.13] — 2026-02-19
 
-### Fixed
-
-- **Oracle burn verification: HTTPS fallback** — `verify_btc_burn_tx` (mempool.space) and `verify_eth_burn_tx` (blockcypher) now retry with direct HTTPS when Tor SOCKS5 proxy fails. Many clearnet APIs block Tor exit nodes. BTC and ETH burns both use identical 2-attempt strategy: Tor first → direct fallback.
-- **Rustfmt CI compliance** — All oracle fallback code reformatted to pass `cargo fmt --check` in CI pipeline.
-- **Flutter Validator `--mainnet` flag** — `NodeProcessService` now passes `--mainnet` CLI flag to `los-node` binary when `NETWORK=mainnet`, matching the safety gate compile-time check.
+### Fixed\n\n- **Flutter Validator `--mainnet` flag** — `NodeProcessService` now passes `--mainnet` CLI flag to `los-node` binary when `NETWORK=mainnet`, matching the safety gate compile-time check.
 - **`build_dmg.sh` mainnet build** — Local macOS DMG builder now compiles `los-node` with `--features mainnet` before bundling.
 
 ### Changed
@@ -163,7 +159,7 @@ The first production release of the Unauthority blockchain, running on the live 
 - **Flat fee model** — BASE_FEE_CIL per transaction.
 - **PoW Mining** for fair public token distribution (~96.5% supply).
 - **Price feed** support for DEX smart contracts.
-- **Flutter Wallet** app (macOS) for sending, receiving, and burning LOS.
+- **Flutter Wallet** app (macOS) for sending and receiving LOS.
 - **Flutter Validator Dashboard** (macOS) for node monitoring and management.
 - **Tor integration** — all nodes auto-generate .onion addresses on startup.
 - **Peer discovery** via bootstrap node list with latency-based selection.
@@ -211,7 +207,6 @@ Pre-mainnet testing release deployed on the live Tor network.
 - Smart contract compilation pipeline (Rust → WASM).
 - DEX AMM contract with constant-product market maker.
 - USP-01 token deployment and transfer operations.
-- Oracle price feed contract.
 
 ### Changed
 

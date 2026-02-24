@@ -39,7 +39,7 @@ pub struct LosMetrics {
     pub active_validators: IntGauge,
     pub validator_votes_total: IntCounter,
 
-    // Distribution metrics (PoW mining + burn)
+    // Distribution metrics (PoW mining)
     pub mint_remaining_supply: Gauge,
 
     // Network metrics
@@ -199,7 +199,7 @@ impl LosMetrics {
         ))?;
         registry.register(Box::new(validator_votes_total.clone()))?;
 
-        // Distribution metrics (PoW mining + burn)
+        // Distribution metrics (PoW mining)
         let mint_remaining_supply = Gauge::with_opts(Opts::new(
             "los_mint_remaining_supply",
             "Remaining LOS supply for PoW mining distribution",

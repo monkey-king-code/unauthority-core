@@ -957,7 +957,7 @@ class _NodeControlScreenState extends State<NodeControlScreen>
               SizedBox(width: 8),
               Expanded(
                   child: Text(
-                      'To send, receive, or burn LOS, use the LOS Wallet app. '
+                      'To send or receive LOS, use the LOS Wallet app. '
                       'This validator controls your node and monitors network health.',
                       style: TextStyle(fontSize: 12, color: Colors.blue))),
             ]),

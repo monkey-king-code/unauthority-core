@@ -27,7 +27,7 @@ Unauthority runs **exclusively** on Tor hidden services:
 
 - **No IP exposure** — validators cannot be DDoS'd by IP
 - **No DNS** — `.onion` addresses are cryptographically derived
-- **No clearnet dependency** — fully permissionless
+- **No clearnet dependency** — Tor strongly recommended for validator anonymity
 - **NAT traversal** — works behind any firewall/router
 - **Censorship resistant** — cannot be blocked by IP/domain
 

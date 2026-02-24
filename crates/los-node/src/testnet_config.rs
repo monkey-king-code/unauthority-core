@@ -12,7 +12,6 @@
 pub enum TestnetLevel {
     /// Level 1: Functional testing only
     /// - Bypass consensus (immediate finalization)
-    /// - Mock burn verification
     /// - UI/API testing focus
     Functional,
 
@@ -134,7 +133,7 @@ static TESTNET_CONFIG: std::sync::LazyLock<TestnetConfig> = std::sync::LazyLock:
     // TESTNET: Allow level selection via environment variable
     match std::env::var("LOS_TESTNET_LEVEL").as_deref() {
         Ok("functional") => {
-            println!("🧪 TESTNET Level 1: Functional testing (instant finalization, mock burns)");
+            println!("🧪 TESTNET Level 1: Functional testing (instant finalization)");
             TestnetConfig::functional()
         }
         Ok("consensus") => {

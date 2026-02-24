@@ -970,57 +970,6 @@ class ApiService {
     }
   }
 
-  // Burn — matches backend BurnRequest { coin_type, txid, recipient_address, signature, public_key }
-  Future<Map<String, dynamic>> submitBurn({
-    required String coinType, // "btc" or "eth"
-    required String txid,
-    String? recipientAddress,
-    String? signature,
-    String? publicKey,
-  }) async {
-    losLog('🔥 [API] submitBurn -> $baseUrl/burn  coin=$coinType txid=$txid');
-    try {
-      final body = <String, dynamic>{
-        'coin_type': coinType,
-        'txid': txid,
-      };
-      if (recipientAddress != null) {
-        body['recipient_address'] = recipientAddress;
-      }
-      // Include signature + public_key for authenticated burns
-      if (signature != null) {
-        body['signature'] = signature;
-      }
-      if (publicKey != null) {
-        body['public_key'] = publicKey;
-      }
-
-      final response = await _requestWithFailover(
-        (url) => _clientFor(url).post(
-          Uri.parse('$url/burn'),
-          headers: {'Content-Type': 'application/json'},
-          body: json.encode(body),
-        ),
-        '/burn',
-      );
-
-      final data = json.decode(response.body);
-
-      // Critical: Check BOTH status code AND response body status
-      // Backend returns 200 on success, >= 400 on errors
-      if (response.statusCode >= 400 || data['status'] == 'error') {
-        losLog('🔥 [API] burn FAILED: ${data['msg']}');
-        throw Exception(data['msg'] ?? 'Burn submission failed');
-      }
-
-      losLog('🔥 [API] burn SUCCESS: $data');
-      return data;
-    } catch (e) {
-      losLog('❌ submitBurn error: $e');
-      rethrow;
-    }
-  }
-
   // Get Validators
   Future<List<ValidatorInfo>> getValidators() async {
     losLog('🌐 [ApiService.getValidators] Fetching validators...');
@@ -1171,7 +1120,7 @@ class ApiService {
   //  ADDITIONAL API ENDPOINTS
   // ══════════════════════════════════════════════════════════════════
 
-  /// Get supply information: remaining supply, total burned USD, circulating supply.
+  /// Get supply information: remaining supply, circulating supply.
   Future<Map<String, dynamic>> getSupply() async {
     losLog('🌐 [ApiService.getSupply] Fetching supply info...');
     try {

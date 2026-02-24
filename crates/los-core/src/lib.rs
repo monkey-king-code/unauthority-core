@@ -464,8 +464,7 @@ impl Ledger {
                 // SECURITY: Enforce max mint per block (1,000 LOS)
                 // Prevents single entity from acquiring disproportionate supply
                 const MAX_MINT_PER_BLOCK: u128 = 1_000 * CIL_PER_LOS;
-                // Faucet blocks (FAUCET:TESTNET:*) and burn mints (Src:*) are exempt ONLY on testnet builds.
-                // On testnet, mock burn TXIDs produce amounts exceeding the limit (no real burns).
+                // Faucet blocks (FAUCET:TESTNET:*) are exempt ONLY on testnet builds.
                 // SECURITY: On mainnet build, nobody can bypass mint cap via link prefix.
                 // System-generated blocks (REWARD:, FEE_REWARD:) are always exempt since amounts
                 // are algorithmically determined by the epoch reward/fee distribution logic.
@@ -493,12 +492,6 @@ impl Ledger {
                     .remaining_supply
                     .saturating_sub(block.amount);
 
-                let parts: Vec<&str> = block.link.split(':').collect();
-                if parts.len() >= 4 {
-                    if let Ok(fiat_price) = parts[3].trim().parse::<u128>() {
-                        self.distribution.total_burned_usd += fiat_price;
-                    }
-                }
             }
             BlockType::Send => {
                 // Enforce minimum transaction fee to prevent zero-fee spam
@@ -683,7 +676,7 @@ impl Ledger {
                 let actual_slash = state.balance.min(block.amount);
                 state.balance = state.balance.saturating_sub(block.amount);
                 // DESIGN Track slashed funds for supply invariant audit.
-                // Slashed funds are burned (removed from circulation permanently)
+                // Slashed funds are removed from circulation permanently
                 // but must be accounted for so total supply doesn't silently shrink.
                 self.total_slashed_cil = self.total_slashed_cil.saturating_add(actual_slash);
             }
@@ -748,7 +741,7 @@ impl Ledger {
         // Total accounted CIL:
         //   balances in accounts (includes distributed rewards)
         // + unminted supply in distribution (includes undistributed reward pool)
-        // + permanently burned via slash
+        // + permanently removed via slash
         // + fees collected but not yet redistributed
         //
         // NOTE: reward_pool_remaining_cil is NOT added here because those tokens

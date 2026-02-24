@@ -1125,42 +1125,6 @@ class ApiService {
     }
   }
 
-  // Burn request
-  Future<Map<String, dynamic>> submitBurn({
-    required String losAddress,
-    required String btcTxid,
-    required String ethTxid,
-    required int amount,
-  }) async {
-    try {
-      final response = await _requestWithFailover(
-        (url) => _clientFor(url).post(
-          Uri.parse('$url/burn'),
-          headers: {'Content-Type': 'application/json'},
-          body: json.encode({
-            'los_address': losAddress,
-            'btc_txid': btcTxid,
-            'eth_txid': ethTxid,
-            'amount': amount,
-          }),
-        ),
-        '/burn',
-      );
-
-      final data = json.decode(response.body);
-
-      // Critical: Check BOTH status code AND response body status
-      if (response.statusCode >= 400 || data['status'] == 'error') {
-        throw Exception(data['msg'] ?? 'Burn submission failed');
-      }
-
-      return data;
-    } catch (e) {
-      losLog('❌ submitBurn error: $e');
-      rethrow;
-    }
-  }
-
   // Get Validators
   // Backend wraps in {"validators": [...]}, not bare array
   Future<List<ValidatorInfo>> getValidators() async {

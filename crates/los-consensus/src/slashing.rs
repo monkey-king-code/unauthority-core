@@ -579,7 +579,7 @@ impl SlashingManager {
                     }
                 }
                 ViolationType::FraudulentTransaction => {
-                    // Fraudulent transactions (fake burn TXIDs etc) — 100% slash like double signing
+                    // Fraudulent transactions — 100% slash like double signing
                     self.slash_double_signing(
                         &offender,
                         self.current_block_height,

@@ -430,7 +430,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               Text('• aBFT consensus with linear stake voting'),
               Text('• PoW mining distribution (~96.5% public)'),
               Text('• Fixed supply: 21.9 million LOS'),
-              Text('• Tor-only mainnet for privacy'),
+              Text('• Tor recommended for privacy'),
               Text('• WASM smart contracts (UVM)'),
               Text('• Linear validator staking (1 CIL = 1 vote)'),
               SizedBox(height: 12),

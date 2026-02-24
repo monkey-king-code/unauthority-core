@@ -573,7 +573,6 @@ The `examples/contracts/` directory contains production-quality contract example
 | `simple_storage.rs` | Full SDK demo: state, events, transfers, blake3 | `los-sdk` |
 | `hello_world.rs` | Basic key-value storage (legacy, uses `std`) | None |
 | `token.rs` | Reference token implementation (legacy) | None |
-| `oracle_price_feed.rs` | Price oracle contract (legacy) | None |
 | `dex_amm.rs` | DEX example (legacy) | None |
 
 The production contracts in `crates/los-contracts/` use the `los-sdk`:

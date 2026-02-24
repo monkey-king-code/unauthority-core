@@ -399,13 +399,6 @@ impl LosNode for LosGrpcService {
             .map(|a| a.is_validator || a.balance >= MIN_VALIDATOR_STAKE_CIL)
             .unwrap_or(false);
 
-        // Oracle prices not available in gRPC context (use REST /oracle endpoint)
-        // Return 0 to indicate no data rather than misleading hardcoded values
-        // PROTO BOUNDARY: `double eth_price_usd/btc_price_usd` required by los.proto.
-        // Placeholder — oracle prices are available via REST /oracle endpoint.
-        let eth_price = 0.0_f64;
-        let btc_price = 0.0_f64;
-
         // Calculate latest block height (count total blocks)
         let latest_height = ledger.blocks.len() as u64;
 
@@ -419,9 +412,6 @@ impl LosNode for LosGrpcService {
             total_supply_cil: (21_936_236u128 * los_core::CIL_PER_LOS).min(u64::MAX as u128) as u64,
             remaining_supply_cil: (ledger.distribution.remaining_supply).min(u64::MAX as u128)
                 as u64,
-            total_burned_usd: (ledger.distribution.total_burned_usd).min(u64::MAX as u128) as u64,
-            eth_price_usd: eth_price,
-            btc_price_usd: btc_price,
             peer_count: self
                 .address_book
                 .lock()

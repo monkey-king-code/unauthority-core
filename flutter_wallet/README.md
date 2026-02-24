@@ -11,7 +11,6 @@ Desktop wallet for the **Unauthority (LOS)** blockchain. Send, receive, and mana
 
 - **Create / Import Wallet** — generate new keys or recover from 24-word BIP39 seed phrase
 - **Send & Receive LOS** — instant transactions with < 3 second finality
-- **Burn LOS** — permanently destroy tokens with validator consensus
 - **Address Book** — save frequently used addresses
 - **Transaction History** — view all past transactions
 - **QR Code** — share your address via QR
@@ -96,7 +95,7 @@ flutter_wallet/
 │   ├── main.dart              # App entry point
 │   ├── constants/             # API URLs, theme colors
 │   ├── models/                # Data models
-│   ├── screens/               # UI screens (dashboard, send, burn, etc.)
+│   ├── screens/               # UI screens (dashboard, send, etc.)
 │   ├── services/              # API, wallet, Dilithium5, Tor, peer discovery
 │   ├── utils/                 # Formatting helpers
 │   └── widgets/               # Reusable UI components

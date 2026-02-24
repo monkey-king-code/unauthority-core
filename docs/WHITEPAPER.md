@@ -14,15 +14,14 @@
 4. [Consensus: aBFT](#consensus-abft)
 5. [Token Economics](#token-economics)
 6. [PoW Mining Distribution](#pow-mining-distribution)
-7. [Smart Contract Oracle](#smart-contract-oracle)
-8. [Validator Rewards](#validator-rewards)
-9. [Linear Voting & Security](#linear-voting--security)
-10. [Slashing & Accountability](#slashing--accountability)
-11. [Post-Quantum Cryptography](#post-quantum-cryptography)
-12. [Network Layer: Tor-Only](#network-layer-tor-only)
-13. [Smart Contracts (UVM)](#smart-contracts-uvm)
-14. [Security Analysis](#security-analysis)
-15. [Performance](#performance)
+7. [Validator Rewards](#validator-rewards)
+8. [Linear Voting & Security](#linear-voting--security)
+9. [Slashing & Accountability](#slashing--accountability)
+10. [Post-Quantum Cryptography](#post-quantum-cryptography)
+11. [Network Layer](#network-layer)
+12. [Smart Contracts (UVM)](#smart-contracts-uvm)
+13. [Security Analysis](#security-analysis)
+14. [Performance](#performance)
 
 ---
 
@@ -31,7 +30,7 @@
 Unauthority (ticker: **LOS** — Lattice Of Sovereignty) is a fully decentralized, permissionless blockchain that operates exclusively over Tor hidden services. It uses a block-lattice (DAG) structure where each account maintains its own chain, enabling lock-free parallel transaction processing. Consensus is achieved via an asynchronous Byzantine Fault Tolerant (aBFT) protocol using post-quantum Dilithium5 signatures. The native token has a fixed supply of 21,936,236 LOS with no inflation.
 
 Key differentiators:
-- **100% Tor-native** — no clearnet, no IP exposure, no DNS
+- **Tor-recommended** — validators can run on .onion (recommended) or clearnet
 - **Post-quantum** — Dilithium5 (NIST FIPS 204) with 256-bit classical security
 - **Deterministic** — all consensus math uses u128 integer arithmetic, zero floating-point
 - **Sybil-neutral** — linear voting (1 LOS = 1 vote), no concentration advantage
@@ -43,7 +42,7 @@ Key differentiators:
 
 1. **Immutability** — No governance override, no admin keys, no emergency pauses
 2. **Permissionless** — Anyone can register as a validator with just 1 LOS (1,000 LOS for reward eligibility)
-3. **Privacy** — All traffic routed through Tor; no KYC, no clearnet dependency
+3. **Privacy** — Tor recommended for all traffic; no KYC required
 4. **Determinism** — Integer-only math in all consensus-critical paths
 5. **Simplicity** — Single binary (`los-node`), auto-bootstrap, minimal configuration
 
@@ -72,7 +71,6 @@ Each block references its `previous` block hash, forming per-account chains. Cro
 | **Send** | Debit from sender's balance | Recipient address |
 | **Receive** | Credit to receiver's balance | Hash of the Send block |
 | **Mint** | Token creation (genesis or PoW reward) | Source reference (MINE:epoch:nonce) |
-| **Burn** | Token destruction | Burn reference |
 | **Change** | Representative/validator delegation | New representative |
 
 ### Block Fields
@@ -81,7 +79,7 @@ Each block references its `previous` block hash, forming per-account chains. Cro
 |---|---|---|
 | `account` | String | Owner address (LOS...) |
 | `previous` | String | Hash of previous block in this chain |
-| `block_type` | Enum | Send, Receive, Mint, Burn, Change |
+| `block_type` | Enum | Send, Receive, Mint, Change |
 | `amount` | u128 | Amount in CIL (atomic units) |
 | `link` | String | Context-dependent reference |
 | `signature` | String | Dilithium5 hex signature |
@@ -306,10 +304,6 @@ voting_power = staked_amount_cil  (if >= MIN_STAKE_CIL, else 0)
 
 All transactions pay the same flat `BASE_FEE_CIL` (0.000001 LOS). No dynamic fee scaling.
 
-### Burn Cap
-
-Maximum burn per block: 1,000 LOS. Prevents rapid supply draining.
-
 ### Governance Quorum
 
 Proposal consensus uses stake-weighted votes:
@@ -408,26 +402,26 @@ Quantum computers threaten ECDSA/Ed25519 via Shor's algorithm. By using lattice-
 
 ---
 
-## Network Layer: Tor-Only
+## Network Layer
 
 ### Architecture
 
-All network traffic is routed through Tor hidden services:
+All network traffic is recommended to be routed through Tor hidden services:
 
 ```
 Node A (.onion) ←→ Tor Network ←→ Node B (.onion)
 ```
 
-- **No clearnet** — validators have no public IP exposure
-- **No DNS** — `.onion` addresses are derived from Tor keys
-- **NAT traversal** — works behind any firewall/router
+- **Tor recommended** — validators are strongly recommended to use .onion addresses for anonymity
+- **Clearnet supported** — validators can also run on IP addresses or domains
+- **NAT traversal** — Tor-based nodes work behind any firewall/router
 
 ### Peer Discovery (v1.0.9+)
 
 1. Node starts and reads genesis config (embedded at compile-time)
-2. Extracts `.onion` addresses of bootstrap validators
-3. Auto-detects Tor SOCKS5 proxy at `127.0.0.1:9050` (500ms timeout)
-4. Connects to bootstrap peers via SOCKS5
+2. Extracts addresses of bootstrap validators (`.onion`, IP, or domain)
+3. If Tor available, auto-detects SOCKS5 proxy at `127.0.0.1:9050` (500ms timeout)
+4. Connects to bootstrap peers (via SOCKS5 for `.onion`, direct for clearnet)
 5. Downloads dynamic peer table from connected peers
 6. Maintains peer table sorted by latency/uptime
 
@@ -440,9 +434,6 @@ All gossip messages are HTTP POST requests routed through Tor:
 | `ID` | Node identity announcement |
 | `BLOCK` | New block broadcast |
 | `CONFIRM_REQ` | Request confirmation votes |
-| `VOTE_REQ` | Request burn verification votes |
-| `VOTE_RES` | Burn verification vote response |
-| `ORACLE_SUBMIT` | Oracle price submission |
 
 ### Encryption
 
@@ -470,16 +461,6 @@ Native fungible token standard enables:
 - Wrapped assets (wBTC, wETH)
 - Standard `transfer`, `approve`, `balance_of` interface
 
-### Oracle Connector
-
-Smart contracts can access oracle price feeds:
-
-```rust
-// Inside a WASM contract
-let eth_price = oracle_get_price("ETH/USD");
-let btc_price = oracle_get_price("BTC/USD");
-```
-
 ### Decentralized Exchange (DEX)
 
 The DEX runs as Layer 2 smart contracts:
@@ -497,12 +478,10 @@ The DEX runs as Layer 2 smart contracts:
 | Threat | Mitigation |
 |---|---|
 | Quantum computers | Dilithium5 (lattice-based, 128-bit quantum security) |
-| DDoS | Tor hidden services — no IP to target |
+| DDoS | Tor hidden services — no IP to target (when using Tor) |
 | 51% attack | aBFT requires 2/3 + 1 honest; linear voting is Sybil-neutral |
-| Oracle manipulation | BFT median, 20% outlier rejection, slashing for fraud |
 | Floating-point non-determinism | Zero f32/f64 in consensus; all u128 integer math |
 | Double spending | Per-account chain with `previous` hash linking; aBFT finality |
-| Front-running (MEV) | Block-lattice doesn't have a mempool ordering advantage |
 | Sybil attack | 1 LOS registration minimum; 1,000 LOS for reward eligibility and quorum weight |
 | Inflation bug | Fixed supply with checked arithmetic and u128 overflow protection |
 | Network partition | aBFT liveness requires ≥2/3 validators; view change on leader failure |

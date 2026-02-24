@@ -414,8 +414,6 @@ GET /supply
   "total_supply_cil": 2193623600000000000,
   "circulating_supply": "777823.00000000000",
   "circulating_supply_cil": 77782300000000000,
-  "burned_supply": "0.00000000000",
-  "burned_supply_cil": 0,
   "remaining_public_supply": "21158413.00000000000",
   "remaining_public_supply_cil": 2115841300000000000
 }
@@ -425,7 +423,6 @@ GET /supply
 |---|---|
 | `total_supply` | Fixed total: 21,936,236 LOS |
 | `circulating_supply` | Currently distributed tokens |
-| `burned_supply` | Tokens destroyed via contract burns |
 | `remaining_public_supply` | Remaining tokens available through PoW mining |
 
 ### Reward Pool Info

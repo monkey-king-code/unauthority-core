@@ -221,65 +221,6 @@ pub fn calculate_escalation_multiplier(current_violations: u32, base_factor: u32
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// BURN LIMIT PER BLOCK
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-/// Maximum CIL that can be burned in a single block (1000 LOS as per whitepaper)
-/// 1 LOS = 100_000_000_000 CIL (10^11)
-pub const BURN_LIMIT_PER_BLOCK_CIL: u128 = 1_000 * 100_000_000_000; // 1000 LOS max per block
-
-/// Track burn activity per block
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BlockBurnState {
-    pub block_height: u64,
-    pub total_burn_cil: u128,
-    pub burn_count: u32,
-    pub remaining_capacity: u128,
-}
-
-impl BlockBurnState {
-    pub fn new(block_height: u64) -> Self {
-        Self {
-            block_height,
-            total_burn_cil: 0,
-            burn_count: 0,
-            remaining_capacity: BURN_LIMIT_PER_BLOCK_CIL,
-        }
-    }
-
-    /// Try to add burn to block - returns true if allowed
-    pub fn try_add_burn(&mut self, burn_amount: u128) -> Result<bool, String> {
-        if burn_amount > self.remaining_capacity {
-            return Err(format!(
-                "Burn amount {} exceeds block capacity {} (total this block: {})",
-                burn_amount, self.remaining_capacity, self.total_burn_cil
-            ));
-        }
-
-        self.total_burn_cil += burn_amount;
-        self.remaining_capacity = self.remaining_capacity.saturating_sub(burn_amount);
-        self.burn_count += 1;
-
-        Ok(self.remaining_capacity > 0)
-    }
-
-    /// Check if block capacity is exhausted
-    pub fn is_capacity_exhausted(&self) -> bool {
-        self.remaining_capacity == 0
-    }
-
-    /// Get fill percentage in basis points (0-10000 = 0%-100%)
-    /// MAINNET SAFETY: Integer-only. No f64 in production code.
-    pub fn get_capacity_percentage_bps(&self) -> u32 {
-        let used = BURN_LIMIT_PER_BLOCK_CIL - self.remaining_capacity;
-        // (used * 10000) / total gives basis points (0.01% precision)
-        ((used * 10_000) / BURN_LIMIT_PER_BLOCK_CIL) as u32
-    }
-
-    // REMOVED: get_capacity_percentage() — used f64, replaced by get_capacity_percentage_bps()
-}
-
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // TESTS
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -355,50 +296,6 @@ mod tests {
 
         let result = apply_fee_multiplier(base_fee, multiplier);
         assert!(result.is_err()); // Should exceed MAX_GAS_PER_TX
-    }
-
-    #[test]
-    fn test_burn_limit_per_block() {
-        let mut burn_state = BlockBurnState::new(1);
-
-        // Add burn transactions up to limit (1000 LOS = 100_000_000_000_000 CIL)
-        let burn_amount = BURN_LIMIT_PER_BLOCK_CIL / 2; // 500 LOS
-        burn_state.try_add_burn(burn_amount).unwrap();
-        burn_state.try_add_burn(burn_amount).unwrap();
-
-        // Should have capacity exhausted
-        assert!(burn_state.is_capacity_exhausted());
-        assert_eq!(burn_state.total_burn_cil, BURN_LIMIT_PER_BLOCK_CIL);
-        assert_eq!(burn_state.burn_count, 2);
-    }
-
-    #[test]
-    fn test_burn_limit_exceeded() {
-        let mut burn_state = BlockBurnState::new(1);
-
-        // Try to add more than block capacity
-        let result = burn_state.try_add_burn(BURN_LIMIT_PER_BLOCK_CIL + 1);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_capacity_percentage() {
-        let mut burn_state = BlockBurnState::new(1);
-
-        // Empty: 0%
-        assert_eq!(burn_state.get_capacity_percentage_bps(), 0);
-
-        // Half full
-        burn_state
-            .try_add_burn(BURN_LIMIT_PER_BLOCK_CIL / 2)
-            .unwrap();
-        assert_eq!(burn_state.get_capacity_percentage_bps(), 5000); // 50.00%
-
-        // Full
-        burn_state
-            .try_add_burn(BURN_LIMIT_PER_BLOCK_CIL / 2)
-            .unwrap();
-        assert_eq!(burn_state.get_capacity_percentage_bps(), 10000); // 100.00%
     }
 
     #[test]

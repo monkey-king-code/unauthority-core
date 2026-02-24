@@ -96,7 +96,7 @@ The wallet and validator bundle Tor internally — no separate Tor installation 
 unauthority-core/
 ├── crates/
 │   ├── los-node/         # Validator binary (REST + gRPC + P2P + consensus)
-│   ├── los-core/         # Blockchain primitives (Block, Tx, Ledger, Oracle)
+│   ├── los-core/         # Blockchain primitives (Block, Tx, Ledger)
 │   ├── los-consensus/    # aBFT consensus, checkpointing, slashing
 │   ├── los-network/      # Tor transport, P2P encryption, fee scaling
 │   ├── los-crypto/       # Dilithium5 keygen, signing, verification
@@ -107,7 +107,7 @@ unauthority-core/
 ├── flutter_wallet/       # Mobile/Desktop user wallet (Flutter + Rust via FRB)
 ├── flutter_validator/    # Validator dashboard app (Flutter + Rust via FRB)
 ├── genesis/              # Genesis block generator & configuration
-├── examples/contracts/   # Sample WASM smart contracts (DEX, Token, Oracle)
+├── examples/contracts/   # Sample WASM smart contracts (DEX, Token)
 └── tests/                # Integration & E2E test suites
 ```
 
@@ -136,15 +136,19 @@ LOS tokens are distributed through **Proof-of-Work Mining**. Miners run a full v
 - **Deduplication:** 1 reward per address per epoch — no double-mining
 - **Requirement:** Must run a full validator node (no external mining API)
 
-> **Fair Distribution:**
-> There is no pre-mine, no ICO, no token sale. Mining is the only way to acquire LOS from the public pool. Anyone can mine by running a validator node.
+> **🏆 100% Fair Distribution — Zero Dev Rewards:**
+>
+> There is no pre-mine, no ICO, no token sale. Mining is the **only** way to acquire LOS from the public pool. Anyone can mine by running a validator node.
+>
+> **The 4 genesis bootstrap validators do NOT receive any mining rewards or validator epoch rewards.** All rewards are reserved exclusively for public participants. The dev treasury (3.5%) is pre-allocated in genesis for development costs only — it does not grow. Bootstrap validator nodes secure the network from day one but earn zero rewards, ensuring maximum fairness for all public miners and validators.
 
 ### Validator Rewards
 
 - **Pool:** 500,000 LOS (non-inflationary, from total supply)
 - **Per Epoch:** 5,000 LOS, halving every 48 epochs (~4 years)
 - **Formula:** `reward_i = budget × stake_i / Σ(all_stakes)` (pure linear, Sybil-neutral)
-- **Eligibility:** Min 1,000 LOS stake, ≥95% uptime
+- **Eligibility:** Min 1,000 LOS stake, ≥95% uptime, **non-genesis validator**
+- **Genesis Exclusion:** The 4 bootstrap validators are explicitly excluded from epoch rewards
 
 ---
 
@@ -156,7 +160,7 @@ The validator node exposes a REST API (35+ endpoints) and a gRPC API.
 |---|---|---|
 | GET | `/health` | Health check |
 | GET | `/node-info` | Node version, peers, block count |
-| GET | `/supply` | Total, circulating, and burned supply |
+| GET | `/supply` | Total supply and remaining supply |
 | GET | `/bal/{address}` | Account balance |
 | GET | `/account/{address}` | Full account details + history |
 | GET | `/history/{address}` | Transaction history |
@@ -168,7 +172,6 @@ The validator node exposes a REST API (35+ endpoints) and a gRPC API.
 | GET | `/reward-info` | Reward pool & epoch info |
 | GET | `/metrics` | Prometheus-compatible metrics |
 | POST | `/send` | Send LOS transaction |
-| POST | `/burn` | Burn LOS tokens (with consensus) |
 | POST | `/register-validator` | Register as network validator |
 | POST | `/deploy-contract` | Deploy WASM smart contract |
 | POST | `/call-contract` | Execute smart contract function |

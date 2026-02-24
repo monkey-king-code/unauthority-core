@@ -16,13 +16,11 @@ enum TestnetLevel {
   /// Level 1: Functional testing
   /// - Immediate transaction confirmation
   /// - Faucet available
-  /// - Mock burn verification
   functional,
 
   /// Level 2/3: Consensus/Production testing
   /// - Real transaction confirmation delays (3 seconds)
   /// - Faucet may be available (Level 2) or disabled (Level 3)
-  /// - Real burn verification
   /// - Wallet behaves identically to mainnet
   consensus,
 }
