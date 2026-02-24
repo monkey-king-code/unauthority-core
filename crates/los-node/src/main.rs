@@ -4360,7 +4360,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 "--port" => {
                     if let Some(v) = args.get(i + 1) {
-                        api_port = v.parse().unwrap_or(3030);
+                        match v.parse::<u16>() {
+                            Ok(p) => api_port = p,
+                            Err(_) => eprintln!("⚠️  Invalid --port value '{}', using default {}", v, api_port),
+                        }
                         i += 1;
                     }
                 }
@@ -4388,7 +4391,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 .find(|l| l.trim().starts_with("rest_port"))
                             {
                                 if let Some(port_str) = line.split('=').nth(1) {
-                                    api_port = port_str.trim().parse().unwrap_or(3030);
+                                    match port_str.trim().parse::<u16>() {
+                                        Ok(p) => api_port = p,
+                                        Err(_) => eprintln!("⚠️  Invalid rest_port in config: '{}', using default {}", port_str.trim(), api_port),
+                                    }
                                 }
                             }
                         }
@@ -4400,7 +4406,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 "--mine-threads" => {
                     if let Some(v) = args.get(i + 1) {
-                        mining_threads = v.parse().unwrap_or(1).clamp(1, 16);
+                        match v.parse::<usize>() {
+                            Ok(t) => mining_threads = t.clamp(1, 16),
+                            Err(_) => eprintln!("⚠️  Invalid --mine-threads value '{}', using default {}", v, mining_threads),
+                        }
                         i += 1;
                     }
                 }
@@ -5484,7 +5493,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Can still be overridden via LOS_P2P_PORT env var.
     if std::env::var("LOS_P2P_PORT").is_err() {
         let p2p_port = api_port + 1000;
-        std::env::set_var("LOS_P2P_PORT", p2p_port.to_string());
+        // SAFETY: Called during single-threaded init before tokio runtime spawns threads.
+        // Rust 1.83+ marks set_var as unsafe in multi-threaded contexts.
+        unsafe { std::env::set_var("LOS_P2P_PORT", p2p_port.to_string()); }
         println!(
             "📡 P2P port auto-derived: {} (API {} + 1000)",
             p2p_port, api_port
@@ -5517,8 +5528,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             match tor_service::ensure_hidden_service(&tor_config).await {
                 Ok(hs) => {
                     // Set env vars so TorConfig::from_env() picks it up in LosNode::start()
-                    std::env::set_var("LOS_ONION_ADDRESS", &hs.onion_address);
-                    std::env::set_var("LOS_HOST_ADDRESS", &hs.onion_address);
+                    // SAFETY: Called during single-threaded init before tokio spawns workers
+                    unsafe {
+                        std::env::set_var("LOS_ONION_ADDRESS", &hs.onion_address);
+                        std::env::set_var("LOS_HOST_ADDRESS", &hs.onion_address);
+                    }
                     println!("🧅 Auto-generated Tor hidden service: {}", hs.onion_address);
 
                     // Register in validator_endpoints for peer discovery
@@ -6764,13 +6778,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "send" => {
                         if p.len() == 3 {
                             let target_short = p[1];
-                            let amt_raw = p[2].parse::<u128>().unwrap_or(0);
+                            let amt_raw = match p[2].parse::<u128>() {
+                                Ok(v) if v > 0 => v,
+                                Ok(_) => {
+                                    println!("❌ Send amount must be greater than 0!");
+                                    continue;
+                                }
+                                Err(_) => {
+                                    println!("❌ Invalid amount: '{}' — must be a positive integer (LOS)", p[2]);
+                                    continue;
+                                }
+                            };
                             let amt = amt_raw * CIL_PER_LOS;
-
-                            if amt == 0 {
-                                println!("❌ Send amount must be greater than 0!");
-                                continue;
-                            }
 
                             let target_full = safe_lock(&address_book).get(target_short).cloned();
 

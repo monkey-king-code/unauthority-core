@@ -60,7 +60,20 @@ static mut STATE: Option<TokenState> = None;
 #[allow(static_mut_refs)] // WASM is single-threaded
 fn get_state() -> &'static mut TokenState {
     unsafe {
-        STATE.as_mut().expect("Token not initialized")
+        if STATE.is_none() {
+            // Auto-initialize with empty state if init() wasn't called
+            STATE = Some(TokenState {
+                info: TokenInfo {
+                    name: String::new(),
+                    symbol: String::new(),
+                    decimals: 8,
+                    total_supply: 0,
+                },
+                balances: HashMap::new(),
+                allowances: HashMap::new(),
+            });
+        }
+        STATE.as_mut().unwrap()
     }
 }
 
@@ -101,7 +114,10 @@ pub extern "C" fn init(name_ptr: *const u8, name_len: usize,
 #[no_mangle]
 pub extern "C" fn execute(input_ptr: *const u8, input_len: usize) -> *const u8 {
     let input = unsafe { std::slice::from_raw_parts(input_ptr, input_len) };
-    let action: Action = serde_json::from_slice(input).expect("Invalid input JSON");
+    let action: Action = match serde_json::from_slice(input) {
+        Ok(a) => a,
+        Err(e) => return error_response(&format!("Invalid input JSON: {}", e)),
+    };
 
     let caller = get_caller();
     let state = get_state();
@@ -179,14 +195,31 @@ pub extern "C" fn execute(input_ptr: *const u8, input_len: usize) -> *const u8 {
         Action::TokenInfo => {
             Response {
                 success: true,
-                data: Some(serde_json::to_string(&state.info).unwrap()),
+                data: serde_json::to_string(&state.info).ok(),
                 message: "Token info retrieved".to_string(),
             }
         }
     };
 
-    let output = serde_json::to_vec(&response).expect("Failed to serialize response");
-    output.as_ptr()
+    let output = match serde_json::to_vec(&response) {
+        Ok(v) => v,
+        Err(_) => return error_response("Internal: failed to serialize response"),
+    };
+    let ptr = output.as_ptr();
+    std::mem::forget(output); // Prevent deallocation — WASM host owns this memory
+    ptr
+}
+
+fn error_response(message: &str) -> *const u8 {
+    let response = Response {
+        success: false,
+        data: None,
+        message: message.to_string(),
+    };
+    let output = serde_json::to_vec(&response).unwrap_or_else(|_| b"{\"success\":false}".to_vec());
+    let ptr = output.as_ptr();
+    std::mem::forget(output);
+    ptr
 }
 
 fn main() {

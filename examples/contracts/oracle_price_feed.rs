@@ -102,7 +102,10 @@ pub extern "C" fn init() {
 #[no_mangle]
 pub extern "C" fn execute(input_ptr: *const u8, input_len: usize) -> *const u8 {
     let input = unsafe { std::slice::from_raw_parts(input_ptr, input_len) };
-    let action: Action = serde_json::from_slice(input).expect("Invalid input JSON");
+    let action: Action = match serde_json::from_slice(input) {
+        Ok(a) => a,
+        Err(e) => return error_response(&format!("Invalid input JSON: {}", e)),
+    };
 
     let state = get_state();
 
@@ -126,7 +129,7 @@ pub extern "C" fn execute(input_ptr: *const u8, input_len: usize) -> *const u8 {
 
                     Response {
                         success: true,
-                        data: Some(serde_json::to_string(&price_data).unwrap()),
+                        data: serde_json::to_string(&price_data).ok(),
                         message: format!("{} price updated: ${}.{:02}", 
                                        asset, 
                                        price_data.price_usd / 100,
@@ -150,7 +153,7 @@ pub extern "C" fn execute(input_ptr: *const u8, input_len: usize) -> *const u8 {
             if let Some(latest) = history.back() {
                 Response {
                     success: true,
-                    data: Some(serde_json::to_string(latest).unwrap()),
+                    data: serde_json::to_string(latest).ok(),
                     message: format!("Latest {} price: ${}.{:02}", 
                                    asset,
                                    latest.price_usd / 100,
@@ -198,7 +201,7 @@ pub extern "C" fn execute(input_ptr: *const u8, input_len: usize) -> *const u8 {
 
             Response {
                 success: true,
-                data: Some(serde_json::to_string(&recent).unwrap()),
+                data: serde_json::to_string(&recent).ok(),
                 message: format!("Retrieved {} price records for {}", recent.len(), asset),
             }
         }
@@ -213,8 +216,13 @@ pub extern "C" fn execute(input_ptr: *const u8, input_len: usize) -> *const u8 {
         }
     };
 
-    let output = serde_json::to_vec(&response).expect("Failed to serialize response");
-    output.as_ptr()
+    let output = match serde_json::to_vec(&response) {
+        Ok(v) => v,
+        Err(_) => return error_response("Internal: failed to serialize response"),
+    };
+    let ptr = output.as_ptr();
+    std::mem::forget(output); // Prevent deallocation — WASM host owns this memory
+    ptr
 }
 
 fn error_response(message: &str) -> *const u8 {
@@ -223,8 +231,11 @@ fn error_response(message: &str) -> *const u8 {
         data: None,
         message: message.to_string(),
     };
-    let output = serde_json::to_vec(&response).expect("Failed to serialize response");
-    output.as_ptr()
+    // Use unwrap_or for fallback — error_response is already the fallback path
+    let output = serde_json::to_vec(&response).unwrap_or_else(|_| b"{\"success\":false}".to_vec());
+    let ptr = output.as_ptr();
+    std::mem::forget(output); // Prevent deallocation — WASM host owns this memory
+    ptr
 }
 
 fn main() {

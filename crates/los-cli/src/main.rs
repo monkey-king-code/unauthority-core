@@ -561,7 +561,7 @@ fn print_banner() {
     );
     println!(
         "{}",
-        "║      UNAUTHORITY (LOS) - CLI v0.1.0           ║"
+        format!("║   UNAUTHORITY (LOS) - CLI v{}           ║", env!("CARGO_PKG_VERSION"))
             .cyan()
             .bold()
     );
@@ -576,19 +576,16 @@ fn print_banner() {
     println!();
 }
 
-// Additional utility for colored output
-#[allow(dead_code)]
-fn print_success(msg: &str) {
+// Utility for colored output (used by commands/ submodules)
+pub(crate) fn print_success(msg: &str) {
     println!("{} {}", "✓".green().bold(), msg);
 }
 
-#[allow(dead_code)]
-fn print_error(msg: &str) {
+pub(crate) fn print_error(msg: &str) {
     eprintln!("{} {}", "✗".red().bold(), msg);
 }
 
-#[allow(dead_code)]
-fn print_info(msg: &str) {
+pub(crate) fn print_info(msg: &str) {
     println!("{} {}", "ℹ".blue().bold(), msg);
 }
 

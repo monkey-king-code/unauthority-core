@@ -52,7 +52,10 @@ fn get_storage() -> &'static mut HashMap<String, String> {
 #[no_mangle]
 pub extern "C" fn execute(input_ptr: *const u8, input_len: usize) -> *const u8 {
     let input = unsafe { std::slice::from_raw_parts(input_ptr, input_len) };
-    let action: Action = serde_json::from_slice(input).expect("Invalid input JSON");
+    let action: Action = match serde_json::from_slice(input) {
+        Ok(a) => a,
+        Err(e) => return error_response(&format!("Invalid input JSON: {}", e)),
+    };
 
     let storage = get_storage();
     let response = match action {
@@ -98,14 +101,31 @@ pub extern "C" fn execute(input_ptr: *const u8, input_len: usize) -> *const u8 {
             let all_keys: Vec<String> = storage.keys().cloned().collect();
             Response {
                 success: true,
-                data: Some(serde_json::to_string(&all_keys).unwrap()),
+                data: serde_json::to_string(&all_keys).ok(),
                 message: format!("Total keys: {}", all_keys.len()),
             }
         }
     };
 
-    let output = serde_json::to_vec(&response).expect("Failed to serialize response");
-    output.as_ptr()
+    let output = match serde_json::to_vec(&response) {
+        Ok(v) => v,
+        Err(_) => return error_response("Internal: failed to serialize response"),
+    };
+    let ptr = output.as_ptr();
+    std::mem::forget(output); // Prevent deallocation — WASM host owns this memory
+    ptr
+}
+
+fn error_response(message: &str) -> *const u8 {
+    let response = Response {
+        success: false,
+        data: None,
+        message: message.to_string(),
+    };
+    let output = serde_json::to_vec(&response).unwrap_or_else(|_| b"{\"success\":false}".to_vec());
+    let ptr = output.as_ptr();
+    std::mem::forget(output);
+    ptr
 }
 
 #[no_mangle]

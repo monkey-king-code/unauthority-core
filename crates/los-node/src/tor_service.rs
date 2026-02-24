@@ -493,9 +493,12 @@ mod tests {
 
     #[test]
     fn test_tor_service_config_defaults() {
-        std::env::remove_var("LOS_TOR_CONTROL");
-        std::env::remove_var("LOS_TOR_COOKIE_PATH");
-        std::env::remove_var("LOS_TOR_CONTROL_PWD");
+        // SAFETY: Test runs single-threaded (cargo test default)
+        unsafe {
+            std::env::remove_var("LOS_TOR_CONTROL");
+            std::env::remove_var("LOS_TOR_COOKIE_PATH");
+            std::env::remove_var("LOS_TOR_CONTROL_PWD");
+        }
 
         let config = TorServiceConfig::from_env(Path::new("/tmp/los-test"), 3030, 4030);
         assert_eq!(config.control_addr, "127.0.0.1:9051");
@@ -505,8 +508,11 @@ mod tests {
 
     #[test]
     fn test_tor_service_config_from_env() {
-        std::env::set_var("LOS_TOR_CONTROL", "127.0.0.1:9151");
-        std::env::set_var("LOS_TOR_CONTROL_PWD", "mypassword");
+        // SAFETY: Test runs single-threaded (cargo test default)
+        unsafe {
+            std::env::set_var("LOS_TOR_CONTROL", "127.0.0.1:9151");
+            std::env::set_var("LOS_TOR_CONTROL_PWD", "mypassword");
+        }
 
         let config = TorServiceConfig::from_env(Path::new("/tmp/los-data"), 3031, 4031);
         assert_eq!(config.control_addr, "127.0.0.1:9151");
@@ -514,8 +520,10 @@ mod tests {
         assert_eq!(config.port_mappings, vec![(3031, 3031), (4031, 4031)]);
 
         // Clean up
-        std::env::remove_var("LOS_TOR_CONTROL");
-        std::env::remove_var("LOS_TOR_CONTROL_PWD");
+        unsafe {
+            std::env::remove_var("LOS_TOR_CONTROL");
+            std::env::remove_var("LOS_TOR_CONTROL_PWD");
+        }
     }
 
     #[tokio::test]

@@ -275,17 +275,21 @@ mod tests {
     #[test]
     fn test_load_empty_bootstrap() {
         // When env var is not set, should return empty
-        std::env::remove_var("LOS_BOOTSTRAP_NODES");
+        // SAFETY: Test runs single-threaded (cargo test default)
+        unsafe { std::env::remove_var("LOS_BOOTSTRAP_NODES"); }
         let nodes = load_bootstrap_nodes();
         assert!(nodes.is_empty());
     }
 
     #[test]
     fn test_tor_config_defaults() {
-        std::env::remove_var("LOS_SOCKS5_PROXY");
-        std::env::remove_var("LOS_TOR_SOCKS5");
-        std::env::remove_var("LOS_ONION_ADDRESS");
-        std::env::remove_var("LOS_P2P_PORT");
+        // SAFETY: Test runs single-threaded (cargo test default)
+        unsafe {
+            std::env::remove_var("LOS_SOCKS5_PROXY");
+            std::env::remove_var("LOS_TOR_SOCKS5");
+            std::env::remove_var("LOS_ONION_ADDRESS");
+            std::env::remove_var("LOS_P2P_PORT");
+        }
 
         let config = TorConfig::from_env();
         // listen_port and onion_address are always deterministic
