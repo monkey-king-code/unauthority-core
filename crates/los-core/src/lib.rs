@@ -502,7 +502,6 @@ impl Ledger {
                         .remaining_supply
                         .saturating_sub(block.amount);
                 }
-
             }
             BlockType::Send => {
                 // Enforce minimum transaction fee to prevent zero-fee spam

@@ -103,7 +103,6 @@ use warp::Filter;
 
 const LEDGER_FILE: &str = "ledger_state.json";
 
-
 // Race condition protection: Atomic flags for save state
 static SAVE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 static SAVE_DIRTY: AtomicBool = AtomicBool::new(false);
@@ -1829,10 +1828,16 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                     .unwrap_or_default()
                     .as_secs();
                 let window_secs: u64 = 60;
-                let recent_tx_count = l_guard.blocks.values()
+                let recent_tx_count = l_guard
+                    .blocks
+                    .values()
                     .filter(|b| b.timestamp > now_ts.saturating_sub(window_secs))
                     .count() as u64;
-                let network_tps = if window_secs > 0 { recent_tx_count / window_secs } else { 0 };
+                let network_tps = if window_secs > 0 {
+                    recent_tx_count / window_secs
+                } else {
+                    0
+                };
 
                 api_json(serde_json::json!({
                     "chain_id": network,
@@ -2243,7 +2248,6 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
             }
         });
 
-
     // 16. GET /blocks/recent (Recent blocks for validator dashboard)
     let l_blocks = ledger.clone();
     let blocks_recent_route = warp::path!("blocks" / "recent")
@@ -2260,7 +2264,8 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                 .enumerate()
                 .map(|(i, (hash, b))| {
                     // Per-account block count as individual height (block-lattice = per-account chain)
-                    let account_block_count = l_guard.accounts
+                    let account_block_count = l_guard
+                        .accounts
                         .get(&b.account)
                         .map(|a| a.block_count)
                         .unwrap_or(0);
@@ -3841,205 +3846,215 @@ function copyText(text){{navigator.clipboard.writeText(text).then(function(){{va
         let my_addr_bg = my_address.clone();
 
         if !is_genesis_miner {
-        tokio::spawn(async move {
-            println!(
-                "⛏️  Mining thread started (address: {})",
-                get_short_addr(&my_addr_bg)
-            );
-            let cancel = Arc::new(AtomicBool::new(false));
+            tokio::spawn(async move {
+                println!(
+                    "⛏️  Mining thread started (address: {})",
+                    get_short_addr(&my_addr_bg)
+                );
+                let cancel = Arc::new(AtomicBool::new(false));
 
-            loop {
-                // Get current epoch and difficulty
-                let (epoch, difficulty_bits, remaining) = {
-                    let now = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs();
-                    let mut ms: std::sync::MutexGuard<'_, MiningState> = safe_lock(&ms_bg);
-                    ms.maybe_advance_epoch(now);
-                    let remaining = safe_lock(&l_bg).distribution.remaining_supply;
-                    (ms.current_epoch, ms.difficulty_bits, remaining)
-                };
-
-                // Check if we already mined this epoch
-                let already_mined_wait = {
-                    let ms: std::sync::MutexGuard<'_, MiningState> = safe_lock(&ms_bg);
-                    if ms.current_epoch_miners.contains(&my_addr_bg) {
+                loop {
+                    // Get current epoch and difficulty
+                    let (epoch, difficulty_bits, remaining) = {
                         let now = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .unwrap_or_default()
                             .as_secs();
-                        Some(ms.epoch_remaining_secs(now))
-                    } else {
-                        None
-                    }
-                }; // ms guard dropped here
-
-                if let Some(remaining_secs) = already_mined_wait {
-                    println!(
-                        "⛏️  Already mined epoch {} — waiting {}s for next epoch",
-                        epoch, remaining_secs
-                    );
-                    tokio::time::sleep(Duration::from_secs(remaining_secs.max(5))).await;
-                    continue;
-                }
-
-                if remaining == 0 {
-                    println!("⛏️  Public supply exhausted — mining stopped");
-                    break;
-                }
-
-                // Mine using CPU thread(s)
-                let addr_clone = my_addr_bg.clone();
-                let cancel_clone = cancel.clone();
-                cancel_clone.store(false, Ordering::Release);
-
-                // Spawn blocking mining work
-                let mining_threads_count = mining_threads;
-                let found = tokio::task::spawn_blocking(move || {
-                    if mining_threads_count <= 1 {
-                        los_core::pow_mint::mine(&addr_clone, epoch, difficulty_bits, &cancel_clone)
-                    } else {
-                        // Multi-threaded mining: first thread to find a nonce cancels others
-                        use std::sync::mpsc as std_mpsc;
-                        let (sender, receiver) = std_mpsc::channel();
-                        let threads: Vec<_> = (0..mining_threads_count)
-                            .map(|_t| {
-                                let addr = addr_clone.clone();
-                                let cancel = cancel_clone.clone();
-                                let tx = sender.clone();
-                                std::thread::spawn(move || {
-                                    if let Some(nonce) = los_core::pow_mint::mine(
-                                        &addr,
-                                        epoch,
-                                        difficulty_bits,
-                                        &cancel,
-                                    ) {
-                                        let _ = tx.send(nonce);
-                                        cancel.store(true, Ordering::Release); // Cancel other threads
-                                    }
-                                })
-                            })
-                            .collect();
-                        drop(sender);
-                        let result = receiver.recv().ok();
-                        cancel_clone.store(true, Ordering::Release); // Ensure all threads stop
-                        for t in threads {
-                            let _ = t.join();
-                        }
-                        result
-                    }
-                })
-                .await
-                .unwrap_or(None);
-
-                if let Some(nonce) = found {
-                    println!(
-                        "⛏️  Found valid nonce {} for epoch {} (difficulty: {} bits)",
-                        nonce, epoch, difficulty_bits
-                    );
-
-                    // Submit proof to mining state
-                    let proof = los_core::pow_mint::MiningProof {
-                        address: my_addr_bg.clone(),
-                        epoch,
-                        nonce,
-                    };
-
-                    let now_secs = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs();
-
-                    let reward_cil = {
                         let mut ms: std::sync::MutexGuard<'_, MiningState> = safe_lock(&ms_bg);
+                        ms.maybe_advance_epoch(now);
                         let remaining = safe_lock(&l_bg).distribution.remaining_supply;
-                        match ms.verify_proof(&proof, now_secs, remaining) {
-                            Ok(r) => r,
-                            Err(e) => {
-                                println!("⛏️  Proof rejected (stale epoch?): {}", e);
-                                continue;
-                            }
+                        (ms.current_epoch, ms.difficulty_bits, remaining)
+                    };
+
+                    // Check if we already mined this epoch
+                    let already_mined_wait = {
+                        let ms: std::sync::MutexGuard<'_, MiningState> = safe_lock(&ms_bg);
+                        if ms.current_epoch_miners.contains(&my_addr_bg) {
+                            let now = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs();
+                            Some(ms.epoch_remaining_secs(now))
+                        } else {
+                            None
                         }
-                    };
+                    }; // ms guard dropped here
 
-                    // Create and process Mint block
-                    let link = format!("MINE:{}:{}", epoch, nonce);
-                    let (head, _bc) = {
-                        let l = safe_lock(&l_bg);
-                        let acc = l.accounts.get(&my_addr_bg);
-                        (
-                            acc.map(|a| a.head.clone())
-                                .unwrap_or_else(|| "0".to_string()),
-                            acc.map(|a| a.block_count).unwrap_or(0),
-                        )
-                    };
+                    if let Some(remaining_secs) = already_mined_wait {
+                        println!(
+                            "⛏️  Already mined epoch {} — waiting {}s for next epoch",
+                            epoch, remaining_secs
+                        );
+                        tokio::time::sleep(Duration::from_secs(remaining_secs.max(5))).await;
+                        continue;
+                    }
 
-                    let mut mint_block = Block {
-                        account: my_addr_bg.clone(),
-                        previous: head,
-                        block_type: BlockType::Mint,
-                        amount: reward_cil,
-                        link,
-                        signature: String::new(),
-                        public_key: hex::encode(&pk_bg),
-                        work: 0,
-                        timestamp: now_secs,
-                        fee: 0,
-                    };
+                    if remaining == 0 {
+                        println!("⛏️  Public supply exhausted — mining stopped");
+                        break;
+                    }
 
-                    // Anti-spam PoW on block
-                    solve_pow(&mut mint_block);
+                    // Mine using CPU thread(s)
+                    let addr_clone = my_addr_bg.clone();
+                    let cancel_clone = cancel.clone();
+                    cancel_clone.store(false, Ordering::Release);
 
-                    // Sign block
-                    mint_block.signature =
-                        match try_sign_hex(mint_block.signing_hash().as_bytes(), &sk_bg) {
-                            Ok(sig) => sig,
-                            Err(e) => {
-                                eprintln!("⛏️  Signing failed: {} — skipping", e);
-                                continue;
+                    // Spawn blocking mining work
+                    let mining_threads_count = mining_threads;
+                    let found = tokio::task::spawn_blocking(move || {
+                        if mining_threads_count <= 1 {
+                            los_core::pow_mint::mine(
+                                &addr_clone,
+                                epoch,
+                                difficulty_bits,
+                                &cancel_clone,
+                            )
+                        } else {
+                            // Multi-threaded mining: first thread to find a nonce cancels others
+                            use std::sync::mpsc as std_mpsc;
+                            let (sender, receiver) = std_mpsc::channel();
+                            let threads: Vec<_> = (0..mining_threads_count)
+                                .map(|_t| {
+                                    let addr = addr_clone.clone();
+                                    let cancel = cancel_clone.clone();
+                                    let tx = sender.clone();
+                                    std::thread::spawn(move || {
+                                        if let Some(nonce) = los_core::pow_mint::mine(
+                                            &addr,
+                                            epoch,
+                                            difficulty_bits,
+                                            &cancel,
+                                        ) {
+                                            let _ = tx.send(nonce);
+                                            cancel.store(true, Ordering::Release);
+                                            // Cancel other threads
+                                        }
+                                    })
+                                })
+                                .collect();
+                            drop(sender);
+                            let result = receiver.recv().ok();
+                            cancel_clone.store(true, Ordering::Release); // Ensure all threads stop
+                            for t in threads {
+                                let _ = t.join();
+                            }
+                            result
+                        }
+                    })
+                    .await
+                    .unwrap_or(None);
+
+                    if let Some(nonce) = found {
+                        println!(
+                            "⛏️  Found valid nonce {} for epoch {} (difficulty: {} bits)",
+                            nonce, epoch, difficulty_bits
+                        );
+
+                        // Submit proof to mining state
+                        let proof = los_core::pow_mint::MiningProof {
+                            address: my_addr_bg.clone(),
+                            epoch,
+                            nonce,
+                        };
+
+                        let now_secs = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs();
+
+                        let reward_cil = {
+                            let mut ms: std::sync::MutexGuard<'_, MiningState> = safe_lock(&ms_bg);
+                            let remaining = safe_lock(&l_bg).distribution.remaining_supply;
+                            match ms.verify_proof(&proof, now_secs, remaining) {
+                                Ok(r) => r,
+                                Err(e) => {
+                                    println!("⛏️  Proof rejected (stale epoch?): {}", e);
+                                    continue;
+                                }
                             }
                         };
 
-                    // Process locally
-                    let process_ok = {
-                        let mut l = safe_lock(&l_bg);
-                        match l.process_block(&mint_block) {
-                            Ok(_) => {
-                                SAVE_DIRTY.store(true, Ordering::Release);
-                                true
-                            }
-                            Err(e) => {
-                                eprintln!("⛏️  Mint block rejected: {}", e);
-                                // Revert mining state
-                                let mut ms: std::sync::MutexGuard<'_, MiningState> =
-                                    safe_lock(&ms_bg);
-                                ms.current_epoch_miners.remove(&my_addr_bg);
-                                false
-                            }
-                        }
-                    };
+                        // Create and process Mint block
+                        let link = format!("MINE:{}:{}", epoch, nonce);
+                        let (head, _bc) = {
+                            let l = safe_lock(&l_bg);
+                            let acc = l.accounts.get(&my_addr_bg);
+                            (
+                                acc.map(|a| a.head.clone())
+                                    .unwrap_or_else(|| "0".to_string()),
+                                acc.map(|a| a.block_count).unwrap_or(0),
+                            )
+                        };
 
-                    if process_ok {
-                        let hash = mint_block.calculate_hash();
-                        if let Err(e) = db_bg.save_block(&hash, &mint_block) {
-                            eprintln!("⚠️ DB save error for mined block: {}", e);
+                        let mut mint_block = Block {
+                            account: my_addr_bg.clone(),
+                            previous: head,
+                            block_type: BlockType::Mint,
+                            amount: reward_cil,
+                            link,
+                            signature: String::new(),
+                            public_key: hex::encode(&pk_bg),
+                            work: 0,
+                            timestamp: now_secs,
+                            fee: 0,
+                        };
+
+                        // Anti-spam PoW on block
+                        solve_pow(&mut mint_block);
+
+                        // Sign block
+                        mint_block.signature =
+                            match try_sign_hex(mint_block.signing_hash().as_bytes(), &sk_bg) {
+                                Ok(sig) => sig,
+                                Err(e) => {
+                                    eprintln!("⛏️  Signing failed: {} — skipping", e);
+                                    continue;
+                                }
+                            };
+
+                        // Process locally
+                        let process_ok = {
+                            let mut l = safe_lock(&l_bg);
+                            match l.process_block(&mint_block) {
+                                Ok(_) => {
+                                    SAVE_DIRTY.store(true, Ordering::Release);
+                                    true
+                                }
+                                Err(e) => {
+                                    eprintln!("⛏️  Mint block rejected: {}", e);
+                                    // Revert mining state
+                                    let mut ms: std::sync::MutexGuard<'_, MiningState> =
+                                        safe_lock(&ms_bg);
+                                    ms.current_epoch_miners.remove(&my_addr_bg);
+                                    false
+                                }
+                            }
+                        };
+
+                        if process_ok {
+                            let hash = mint_block.calculate_hash();
+                            if let Err(e) = db_bg.save_block(&hash, &mint_block) {
+                                eprintln!("⚠️ DB save error for mined block: {}", e);
+                            }
+                            // Broadcast to network
+                            if let Ok(json) = serde_json::to_string(&mint_block) {
+                                let gossip_msg = format!("MINE_BLOCK:{}", json);
+                                let _ = tx_bg.send(gossip_msg).await;
+                            }
+                            let reward_los = reward_cil / CIL_PER_LOS;
+                            let reward_remainder =
+                                (reward_cil % CIL_PER_LOS) / (CIL_PER_LOS / 10000); // 4 decimal places
+                            println!(
+                                "⛏️  Mined {}.{:04} LOS in epoch {} ✓",
+                                reward_los, reward_remainder, epoch
+                            );
                         }
-                        // Broadcast to network
-                        if let Ok(json) = serde_json::to_string(&mint_block) {
-                            let gossip_msg = format!("MINE_BLOCK:{}", json);
-                            let _ = tx_bg.send(gossip_msg).await;
-                        }
-                        let reward_los = reward_cil / CIL_PER_LOS;
-                        let reward_remainder = (reward_cil % CIL_PER_LOS) / (CIL_PER_LOS / 10000); // 4 decimal places
-                        println!("⛏️  Mined {}.{:04} LOS in epoch {} ✓", reward_los, reward_remainder, epoch);
+                    } else {
+                        // Mining was cancelled (epoch changed) — retry immediately
+                        tokio::time::sleep(Duration::from_millis(100)).await;
                     }
-                } else {
-                    // Mining was cancelled (epoch changed) — retry immediately
-                    tokio::time::sleep(Duration::from_millis(100)).await;
                 }
-            }
-        });
+            });
         } // end if !is_genesis_miner
     }
 
@@ -4132,7 +4147,6 @@ async fn handle_rejection(
     }
 }
 
-
 // --- UTILS & FORMATTING ---
 
 fn get_short_addr(full_addr: &str) -> String {
@@ -4152,7 +4166,6 @@ fn format_balance_precise(cil_amount: u128) -> String {
         cil_amount % CIL_PER_LOS
     )
 }
-
 
 fn format_u128(n: u128) -> String {
     let s = n.to_string();
@@ -4433,7 +4446,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if let Some(v) = args.get(i + 1) {
                         match v.parse::<u16>() {
                             Ok(p) => api_port = p,
-                            Err(_) => eprintln!("⚠️  Invalid --port value '{}', using default {}", v, api_port),
+                            Err(_) => eprintln!(
+                                "⚠️  Invalid --port value '{}', using default {}",
+                                v, api_port
+                            ),
                         }
                         i += 1;
                     }
@@ -4479,7 +4495,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if let Some(v) = args.get(i + 1) {
                         match v.parse::<usize>() {
                             Ok(t) => mining_threads = t.clamp(1, 16),
-                            Err(_) => eprintln!("⚠️  Invalid --mine-threads value '{}', using default {}", v, mining_threads),
+                            Err(_) => eprintln!(
+                                "⚠️  Invalid --mine-threads value '{}', using default {}",
+                                v, mining_threads
+                            ),
                         }
                         i += 1;
                     }
@@ -5226,9 +5245,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let l = safe_lock(&ledger);
             let epoch_prefix = format!("MINE:{}:", current_epoch);
             for block in l.blocks.values() {
-                if block.block_type == BlockType::Mint
-                    && block.link.starts_with(&epoch_prefix)
-                {
+                if block.block_type == BlockType::Mint && block.link.starts_with(&epoch_prefix) {
                     ms.current_epoch_miners.insert(block.account.clone());
                 }
             }
@@ -5401,7 +5418,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Must happen before background tasks are spawned below.
     if std::env::var("LOS_P2P_PORT").is_err() {
         let p2p_port = api_port + 1000;
-        unsafe { std::env::set_var("LOS_P2P_PORT", p2p_port.to_string()); }
+        unsafe {
+            std::env::set_var("LOS_P2P_PORT", p2p_port.to_string());
+        }
         println!(
             "📡 P2P port auto-derived: {} (API {} + 1000)",
             p2p_port, api_port
@@ -5562,7 +5581,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Collect hashes of stale entries BEFORE removing them
                 let stale_hashes: Vec<String> = ps
                     .iter()
-                    .filter(|(_, (block, _))| now.saturating_sub(block.timestamp) >= PENDING_TTL_SECS)
+                    .filter(|(_, (block, _))| {
+                        now.saturating_sub(block.timestamp) >= PENDING_TTL_SECS
+                    })
                     .map(|(hash, _)| hash.clone())
                     .collect();
                 ps.retain(|_, (block, _)| now.saturating_sub(block.timestamp) < PENDING_TTL_SECS);
@@ -6473,7 +6494,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         for addr in &bootstrap_list {
             let _ = tx_boot.send(format!("DIAL:{}", addr)).await;
             tokio::time::sleep(Duration::from_secs(2)).await;
-            let s = { let l = safe_lock(&ledger_boot); l.distribution.remaining_supply };
+            let s = {
+                let l = safe_lock(&ledger_boot);
+                l.distribution.remaining_supply
+            };
             // Include timestamp nonce to prevent GossipSub message deduplication.
             // GossipSub deduplicates by hashing message.data — identical content
             // gets suppressed. Adding epoch_ms ensures each broadcast is unique.
@@ -6489,7 +6513,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Wait extra time for GossipSub mesh to form before second broadcast
         tokio::time::sleep(Duration::from_secs(5)).await;
         {
-            let s = { let l = safe_lock(&ledger_boot); l.distribution.remaining_supply };
+            let s = {
+                let l = safe_lock(&ledger_boot);
+                l.distribution.remaining_supply
+            };
             let ts = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -6518,7 +6545,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         loop {
             interval.tick().await;
             sync_counter += 1;
-            let (s, block_count) = { let l = safe_lock(&ledger_boot); (l.distribution.remaining_supply, l.blocks.len()) };
+            let (s, block_count) = {
+                let l = safe_lock(&ledger_boot);
+                (l.distribution.remaining_supply, l.blocks.len())
+            };
             let ts = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -6649,7 +6679,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Determine the health check URL.
                 // Tor hidden services expose the API port (e.g. 3030) — not port 80.
                 // The torrc maps HiddenServicePort <api_port> → 127.0.0.1:<api_port>.
-                let health_url = format!("http://{}:{}/health", my_onion.trim_end_matches('/'), api_port);
+                let health_url = format!(
+                    "http://{}:{}/health",
+                    my_onion.trim_end_matches('/'),
+                    api_port
+                );
 
                 println!(
                     "🧅🏥 Tor Health Monitor started (checking {} every {}s)",

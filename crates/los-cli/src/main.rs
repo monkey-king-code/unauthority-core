@@ -561,9 +561,12 @@ fn print_banner() {
     );
     println!(
         "{}",
-        format!("║   UNAUTHORITY (LOS) - CLI v{}           ║", env!("CARGO_PKG_VERSION"))
-            .cyan()
-            .bold()
+        format!(
+            "║   UNAUTHORITY (LOS) - CLI v{}           ║",
+            env!("CARGO_PKG_VERSION")
+        )
+        .cyan()
+        .bold()
     );
     println!(
         "{}",

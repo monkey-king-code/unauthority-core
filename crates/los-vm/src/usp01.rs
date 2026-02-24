@@ -484,11 +484,15 @@ impl Usp01Token {
                     let bal = self.balances.entry(caller.to_string()).or_insert(0);
                     match bal.checked_sub(amount) {
                         Some(v) => *bal = v,
-                        None => return Usp01Response {
-                            success: false, data: None,
-                            message: "Internal error: balance underflow after validation".to_string(),
-                            events: Vec::new(),
-                        },
+                        None => {
+                            return Usp01Response {
+                                success: false,
+                                data: None,
+                                message: "Internal error: balance underflow after validation"
+                                    .to_string(),
+                                events: Vec::new(),
+                            }
+                        }
                     }
                 }
                 // Credit recipient (checked_add — overflow = critical)
@@ -496,11 +500,14 @@ impl Usp01Token {
                     let bal = self.balances.entry(to.clone()).or_insert(0);
                     match bal.checked_add(amount) {
                         Some(v) => *bal = v,
-                        None => return Usp01Response {
-                            success: false, data: None,
-                            message: "Internal error: recipient balance overflow".to_string(),
-                            events: Vec::new(),
-                        },
+                        None => {
+                            return Usp01Response {
+                                success: false,
+                                data: None,
+                                message: "Internal error: recipient balance overflow".to_string(),
+                                events: Vec::new(),
+                            }
+                        }
                     }
                 }
 
@@ -562,11 +569,15 @@ impl Usp01Token {
                     let bal = self.balances.entry(from.clone()).or_insert(0);
                     match bal.checked_sub(amount) {
                         Some(v) => *bal = v,
-                        None => return Usp01Response {
-                            success: false, data: None,
-                            message: "Internal error: balance underflow after validation".to_string(),
-                            events: Vec::new(),
-                        },
+                        None => {
+                            return Usp01Response {
+                                success: false,
+                                data: None,
+                                message: "Internal error: balance underflow after validation"
+                                    .to_string(),
+                                events: Vec::new(),
+                            }
+                        }
                     }
                 }
                 // Credit (checked_add — overflow = critical)
@@ -574,11 +585,14 @@ impl Usp01Token {
                     let bal = self.balances.entry(to.clone()).or_insert(0);
                     match bal.checked_add(amount) {
                         Some(v) => *bal = v,
-                        None => return Usp01Response {
-                            success: false, data: None,
-                            message: "Internal error: recipient balance overflow".to_string(),
-                            events: Vec::new(),
-                        },
+                        None => {
+                            return Usp01Response {
+                                success: false,
+                                data: None,
+                                message: "Internal error: recipient balance overflow".to_string(),
+                                events: Vec::new(),
+                            }
+                        }
                     }
                 }
                 // Reduce allowance (checked_sub — underflow = logic bug)
@@ -589,11 +603,15 @@ impl Usp01Token {
                         .or_insert(0);
                     match allow.checked_sub(amount) {
                         Some(v) => *allow = v,
-                        None => return Usp01Response {
-                            success: false, data: None,
-                            message: "Internal error: allowance underflow after validation".to_string(),
-                            events: Vec::new(),
-                        },
+                        None => {
+                            return Usp01Response {
+                                success: false,
+                                data: None,
+                                message: "Internal error: allowance underflow after validation"
+                                    .to_string(),
+                                events: Vec::new(),
+                            }
+                        }
                     }
                 }
 
@@ -622,11 +640,15 @@ impl Usp01Token {
                     let bal = self.balances.entry(caller.to_string()).or_insert(0);
                     match bal.checked_sub(amount) {
                         Some(v) => *bal = v,
-                        None => return Usp01Response {
-                            success: false, data: None,
-                            message: "Internal error: burn underflow after validation".to_string(),
-                            events: Vec::new(),
-                        },
+                        None => {
+                            return Usp01Response {
+                                success: false,
+                                data: None,
+                                message: "Internal error: burn underflow after validation"
+                                    .to_string(),
+                                events: Vec::new(),
+                            }
+                        }
                     }
                 }
                 // Decrease total supply permanently
@@ -718,11 +740,14 @@ impl Usp01Token {
                     let bal = self.balances.entry(to.clone()).or_insert(0);
                     match bal.checked_add(amount) {
                         Some(v) => *bal = v,
-                        None => return Usp01Response {
-                            success: false, data: None,
-                            message: "Internal error: WrapMint balance overflow".to_string(),
-                            events: Vec::new(),
-                        },
+                        None => {
+                            return Usp01Response {
+                                success: false,
+                                data: None,
+                                message: "Internal error: WrapMint balance overflow".to_string(),
+                                events: Vec::new(),
+                            }
+                        }
                     }
                 }
                 self.metadata.total_supply = self.metadata.total_supply.saturating_add(amount);
@@ -763,11 +788,15 @@ impl Usp01Token {
                     let bal = self.balances.entry(caller.to_string()).or_insert(0);
                     match bal.checked_sub(amount) {
                         Some(v) => *bal = v,
-                        None => return Usp01Response {
-                            success: false, data: None,
-                            message: "Internal error: WrapBurn underflow after validation".to_string(),
-                            events: Vec::new(),
-                        },
+                        None => {
+                            return Usp01Response {
+                                success: false,
+                                data: None,
+                                message: "Internal error: WrapBurn underflow after validation"
+                                    .to_string(),
+                                events: Vec::new(),
+                            }
+                        }
                     }
                 }
                 self.metadata.total_supply = self.metadata.total_supply.saturating_sub(amount);

@@ -276,7 +276,9 @@ mod tests {
     fn test_load_empty_bootstrap() {
         // When env var is not set, should return empty
         // SAFETY: Test runs single-threaded (cargo test default)
-        unsafe { std::env::remove_var("LOS_BOOTSTRAP_NODES"); }
+        unsafe {
+            std::env::remove_var("LOS_BOOTSTRAP_NODES");
+        }
         let nodes = load_bootstrap_nodes();
         assert!(nodes.is_empty());
     }
