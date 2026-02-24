@@ -306,7 +306,8 @@ pub struct Ledger {
     #[serde(default)]
     pub accumulated_fees_cil: u128,
     /// DESIGN Total CIL permanently removed from circulation via Slash blocks.
-    /// Used by the supply audit to verify: sum(balances) + remaining_supply + pool_remaining + total_slashed == TOTAL_SUPPLY_CIL.
+    /// Used by the supply audit to verify: sum(balances) + remaining_supply + total_slashed + fees == TOTAL_SUPPLY_CIL.
+    /// The validator reward pool is NOT separate — its undistributed tokens live in remaining_supply.
     /// Without this counter, slashed funds silently disappear and the supply invariant breaks.
     #[serde(default)]
     pub total_slashed_cil: u128,
@@ -733,38 +734,34 @@ impl Ledger {
         // Sum all account balances
         let balance_sum: u128 = self.accounts.values().map(|a| a.balance).sum();
 
-        // remaining_supply = tokens not yet minted from distribution
+        // remaining_supply = tokens not yet minted from distribution (public pool).
+        // This includes the validator reward pool's undistributed tokens — when
+        // rewards are distributed, process_block(Mint) deducts from remaining_supply
+        // and adds to validator balances. The reward pool's `remaining_cil` is an
+        // internal budget counter, NOT separate tokens.
         let remaining_supply = self.distribution.remaining_supply;
 
-        // reward pool: remaining + distributed = original pool
+        // Sanity check: reward pool internal tracking
         let _reward_pool_total =
             reward_pool_remaining_cil.saturating_add(reward_pool_distributed_cil);
 
         // Total accounted CIL:
-        //   balances in accounts
-        // + unminted supply in distribution
+        //   balances in accounts (includes distributed rewards)
+        // + unminted supply in distribution (includes undistributed reward pool)
         // + permanently burned via slash
         // + fees collected but not yet redistributed
-        // + reward pool (remaining + distributed is already in balances)
         //
-        // The reward pool's distributed amount is already in validator balances,
-        // so we only add reward_pool_remaining (funds still in the pool).
+        // NOTE: reward_pool_remaining_cil is NOT added here because those tokens
+        // are already counted within distribution.remaining_supply. The reward pool
+        // is carved from the public allocation (PUBLIC_SUPPLY_CAP = 21,158,413 LOS),
+        // which is the initial value of remaining_supply. When rewards are distributed,
+        // process_block(Mint) deducts from remaining_supply → balances, keeping the
+        // invariant intact. Adding reward_pool_remaining would double-count those tokens.
         let accounted = balance_sum
             .saturating_add(remaining_supply)
             .saturating_add(self.total_slashed_cil)
-            .saturating_add(self.accumulated_fees_cil)
-            .saturating_add(reward_pool_remaining_cil);
+            .saturating_add(self.accumulated_fees_cil);
 
-        // The total supply should equal the sum of:
-        // - All balances (including distributed rewards)
-        // - Unminted supply
-        // - Slashed/burned CIL
-        // - Pending fees
-        // - Remaining reward pool
-        //
-        // However, reward_pool_distributed_cil came FROM distribution.remaining_supply
-        // and is now IN balances, so it's already counted on both sides.
-        // We only need: balances + remaining_supply + slashed + fees + reward_pool_remaining
         if accounted == total_supply_cil {
             Ok(())
         } else if accounted > total_supply_cil {
