@@ -11,7 +11,7 @@
 
 ## What is Unauthority?
 
-Unauthority is a post-quantum secure, block-lattice (DAG) blockchain with aBFT consensus that operates **exclusively over the Tor network**. Every validator hosts a `.onion` hidden service — no DNS, no clearnet, no central point of failure.
+Unauthority is a post-quantum secure, block-lattice (DAG) blockchain with aBFT consensus. Tor hidden services (`.onion`) are **strongly recommended** for validator anonymity, but validators can also run on clearnet (IP/domain). No DNS required, no central point of failure.
 
 | Property | Value |
 |---|---|
@@ -21,7 +21,7 @@ Unauthority is a post-quantum secure, block-lattice (DAG) blockchain with aBFT c
 | **Consensus** | aBFT (Asynchronous Byzantine Fault Tolerance) |
 | **Structure** | Block-Lattice (DAG) + Global State |
 | **Cryptography** | Dilithium5 (Post-Quantum) + SHA-3 |
-| **Network** | Tor Hidden Services (.onion) exclusively |
+| **Network** | Tor Hidden Services (.onion) recommended; clearnet supported |
 | **Smart Contracts** | WASM via UVM (Unauthority Virtual Machine) |
 | **Token Standard** | USP-01 (Native Fungible + Wrapped Assets) |
 | **DEX** | Constant-Product AMM (x·y=k), MEV Resistant |
@@ -31,7 +31,7 @@ Unauthority is a post-quantum secure, block-lattice (DAG) blockchain with aBFT c
 ## Why Unauthority?
 
 - **Post-Quantum Secure** — Dilithium5 (NIST standard) resists both classical and quantum attacks
-- **Tor-Native** — All traffic over `.onion`. No IP addresses exposed, ever
+- **Tor-Recommended** — `.onion` strongly recommended for privacy; clearnet (IP/domain) also supported
 - **DAG Architecture** — Parallel account processing, no global block contention
 - **Fair Distribution** — 96.5% public via PoW Mining, only 3.5% dev allocation
 - **Linear Voting** — 1 LOS = 1 Vote, Sybil-neutral stake-weighted consensus

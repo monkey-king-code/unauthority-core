@@ -96,7 +96,7 @@ Open in Tor Browser: http://abc123xyz.onion
 
 ## Requirements
 
-- **Users must use Tor Browser** — `.onion` addresses are only accessible via Tor
+- **Tor Browser recommended for .onion** — `.onion` addresses require Tor; clearnet addresses work in any browser
 - **Validators must be online** — JavaScript fetches from validators; if all are offline the page still loads but shows no data
 - **CORS headers** — Validator los-node already enables `allow_any_origin()` on all routes
 

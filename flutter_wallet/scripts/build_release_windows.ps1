@@ -12,7 +12,7 @@
 #   .\scripts\build_release_windows.ps1
 #
 # Output:
-#   release\LOS-Wallet-v1.0.9-testnet-windows-x64.zip
+#   release\LOS-Wallet-v2.0.0-windows-x64.zip
 #
 # Prerequisites:
 #   - Flutter SDK installed
@@ -23,7 +23,7 @@
 $ErrorActionPreference = "Stop"
 
 # ── Configuration ────────────────────────────────────────────────────────────
-$VERSION = "1.0.9-testnet"
+$VERSION = "2.0.0"
 $SCRIPT_DIR = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $WALLET_DIR = Split-Path -Parent $SCRIPT_DIR
 $NATIVE_DIR = Join-Path $WALLET_DIR "native\los_crypto_ffi"

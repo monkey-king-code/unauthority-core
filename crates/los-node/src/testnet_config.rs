@@ -43,7 +43,13 @@ pub struct TestnetConfig {
 
 impl TestnetConfig {
     /// Level 1: Current testnet (functional testing)
+    /// SAFETY: signature_validation=false — accepts ANY signature.
+    /// MUST never be called on mainnet builds.
     pub fn functional() -> Self {
+        assert!(
+            !los_core::is_mainnet_build(),
+            "BUG: functional() testnet config used on mainnet build — signature validation disabled!"
+        );
         Self {
             level: TestnetLevel::Functional,
             enable_faucet: true,

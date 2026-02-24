@@ -60,9 +60,9 @@ If you discover a security vulnerability in Unauthority (LOS), please report it 
 
 ### Network Privacy
 
-- **Tor-only:** All traffic routed through Tor hidden services
-- **No clearnet:** Validators have no public IP exposure
-- **P2P encryption:** Noise Protocol (XX handshake) over Tor transport
+- **Tor recommended:** Tor hidden services strongly recommended for validator anonymity
+- **Clearnet supported:** Validators can also run on IP or domain
+- **P2P encryption:** Noise Protocol (XX handshake) over Tor or clearnet transport
 
 ### Known Limitations
 
