@@ -7649,9 +7649,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 };
 
                 // Determine the health check URL.
-                // Tor hidden services expose port 80 → local API port.
-                // So we always use http://<onion>/health (port 80 default).
-                let health_url = format!("http://{}/health", my_onion.trim_end_matches('/'));
+                // Tor hidden services expose the API port (e.g. 3030) — not port 80.
+                // The torrc maps HiddenServicePort <api_port> → 127.0.0.1:<api_port>.
+                let health_url = format!("http://{}:{}/health", my_onion.trim_end_matches('/'), api_port);
 
                 println!(
                     "🧅🏥 Tor Health Monitor started (checking {} every {}s)",
