@@ -3844,6 +3844,13 @@ function copyText(text){{navigator.clipboard.writeText(text).then(function(){{va
         let sk_bg = secret_key.clone();
         let tx_bg = tx_out.clone();
         let my_addr_bg = my_address.clone();
+        // Arcs for auto self-registration as validator after first mine
+        let sm_bg = slashing_manager.clone();
+        let rp_bg = reward_pool.clone();
+        let abft_bg = abft_consensus.clone();
+        let ve_bg = validator_endpoints.clone();
+        let bv_bg = bootstrap_validators.clone();
+        let lrv_bg = local_registered_validators.clone();
 
         if !is_genesis_miner {
             tokio::spawn(async move {
@@ -4048,6 +4055,109 @@ function copyText(text){{navigator.clipboard.writeText(text).then(function(){{va
                                 "⛏️  Mined {}.{:04} LOS in epoch {} ✓",
                                 reward_los, reward_remainder, epoch
                             );
+
+                            // ── AUTO SELF-REGISTER AS VALIDATOR ──
+                            // After first successful mine, auto-register this node as a validator
+                            // so it participates in consensus and is discoverable by peers.
+                            // Requires balance >= MIN_VALIDATOR_REGISTER_CIL (1 LOS).
+                            let needs_register = {
+                                let l = safe_lock(&l_bg);
+                                match l.accounts.get(&my_addr_bg) {
+                                    Some(acc) => !acc.is_validator
+                                        && acc.balance >= MIN_VALIDATOR_REGISTER_CIL
+                                        && !bv_bg.contains(&my_addr_bg),
+                                    None => false,
+                                }
+                            };
+                            if needs_register {
+                                // 1. Set is_validator = true in ledger
+                                {
+                                    let mut l = safe_lock(&l_bg);
+                                    if let Some(acc) = l.accounts.get_mut(&my_addr_bg) {
+                                        acc.is_validator = true;
+                                    }
+                                }
+                                // 2. Register in SlashingManager
+                                {
+                                    let mut sm = safe_lock(&sm_bg);
+                                    if sm.get_profile(&my_addr_bg).is_none() {
+                                        sm.register_validator(my_addr_bg.clone());
+                                    }
+                                }
+                                // 3. Register in RewardPool (non-genesis)
+                                {
+                                    let balance = safe_lock(&l_bg)
+                                        .accounts
+                                        .get(&my_addr_bg)
+                                        .map(|a| a.balance)
+                                        .unwrap_or(0);
+                                    let mut rp = safe_lock(&rp_bg);
+                                    rp.register_validator(&my_addr_bg, false, balance);
+                                }
+                                // 4. Track as locally-registered validator for heartbeats
+                                {
+                                    let mut lrv = safe_lock(&lrv_bg);
+                                    lrv.insert(my_addr_bg.clone());
+                                }
+                                // 5. Update aBFT validator set dynamically
+                                {
+                                    let l = safe_lock(&l_bg);
+                                    let mut validators: Vec<String> = l
+                                        .accounts
+                                        .iter()
+                                        .filter(|(_, a)| {
+                                            a.balance >= MIN_VALIDATOR_REGISTER_CIL && a.is_validator
+                                        })
+                                        .map(|(addr, _)| addr.clone())
+                                        .collect();
+                                    validators.sort();
+                                    safe_lock(&abft_bg).update_validator_set(validators);
+                                }
+                                // 6. Store our onion address in validator endpoints
+                                let host_addr = get_node_host_address();
+                                if let Some(ref host) = host_addr {
+                                    insert_validator_endpoint(
+                                        &mut safe_lock(&ve_bg),
+                                        my_addr_bg.clone(),
+                                        host.clone(),
+                                    );
+                                }
+                                // 7. Broadcast VALIDATOR_REG to peers
+                                let ts = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs();
+                                let reg_message =
+                                    format!("REGISTER_VALIDATOR:{}:{}", my_addr_bg, ts);
+                                if let Ok(sig) =
+                                    los_crypto::sign_message(reg_message.as_bytes(), &sk_bg)
+                                {
+                                    let reg_msg = serde_json::json!({
+                                        "type": "VALIDATOR_REG",
+                                        "address": my_addr_bg,
+                                        "public_key": hex::encode(&pk_bg),
+                                        "signature": hex::encode(&sig),
+                                        "timestamp": ts,
+                                        "host_address": host_addr,
+                                        "onion_address": host_addr,
+                                    });
+                                    let _ = tx_bg
+                                        .send(format!("VALIDATOR_REG:{}", reg_msg))
+                                        .await;
+                                }
+                                SAVE_DIRTY.store(true, Ordering::Release);
+                                let stake_los = safe_lock(&l_bg)
+                                    .accounts
+                                    .get(&my_addr_bg)
+                                    .map(|a| a.balance / CIL_PER_LOS)
+                                    .unwrap_or(0);
+                                println!(
+                                    "✅ Auto-registered as validator: {} (stake: {} LOS, host: {})",
+                                    get_short_addr(&my_addr_bg),
+                                    stake_los,
+                                    host_addr.as_deref().unwrap_or("none")
+                                );
+                            }
                         }
                     } else {
                         // Mining was cancelled (epoch changed) — retry immediately
@@ -5136,6 +5246,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Set expected heartbeats using the correct interval for testnet/mainnet
     let initial_heartbeat_secs: u64 = if los_core::is_testnet_build() { 10 } else { 60 };
     reward_pool_state.set_expected_heartbeats(initial_heartbeat_secs);
+
+    // ── STARTUP AUTO SELF-REGISTER ──────────────────────────────────
+    // If this node's address already has balance >= 1 LOS (from previous
+    // mining session) but isn't flagged as a validator, auto-register it.
+    // This handles the restart case where the node mined previously.
+    if enable_mining && !bootstrap_validators.contains(&my_address) {
+        let should_auto_register = ledger_state
+            .accounts
+            .get(&my_address)
+            .map(|acc| !acc.is_validator && acc.balance >= MIN_VALIDATOR_REGISTER_CIL)
+            .unwrap_or(false);
+        if should_auto_register {
+            let balance_los = ledger_state
+                .accounts
+                .get(&my_address)
+                .map(|a| a.balance / CIL_PER_LOS)
+                .unwrap_or(0);
+            if let Some(acc_mut) = ledger_state.accounts.get_mut(&my_address) {
+                acc_mut.is_validator = true;
+            }
+            println!(
+                "✅ Startup auto-register: {} as validator (balance: {} LOS)",
+                get_short_addr(&my_address),
+                balance_los
+            );
+        }
+    }
 
     let reward_pool = Arc::new(Mutex::new(reward_pool_state));
     println!(
