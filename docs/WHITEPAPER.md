@@ -353,6 +353,8 @@ This ensures liveness even if validators go offline.
 | Bootstrap Validators (4 × 1,000) | 4,000 | 0.02% | Stake only |
 | **Total** | **21,936,236** | **100%** | |
 
+> **Transparency:** All genesis wallet addresses are publicly disclosed with API instructions for on-chain balance verification. See [Genesis Transparency Report](GENESIS_TRANSPARENCY.md).
+
 ### 6.3 Bootstrap Validator Restrictions
 
 The 4 genesis bootstrap validators exist solely to start the network. They are **code-level blocked** from receiving ANY rewards:

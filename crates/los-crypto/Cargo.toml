@@ -22,5 +22,13 @@ digest = "0.10"
 # (native Dilithium5 FFI not available on macOS)
 ed25519-dalek = { version = "2", features = ["alloc"] }
 
+[dev-dependencies]
+proptest = "1.4"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "bench_crypto"
+harness = false
+
 [features]
 mainnet = []

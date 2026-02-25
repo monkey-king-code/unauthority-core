@@ -279,3 +279,5 @@ flutter_wallet/native/los_crypto_ffi/pqcrypto-internals-seeded/target/
 **/.dart_tool/
 **/ephemeral/
 .venv/
+fuzz/corpus/
+fuzz/Cargo.lock
