@@ -3437,7 +3437,7 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                             .rsplit(':')
                             .next()
                             .and_then(|p| p.parse().ok())
-                            .unwrap_or(80);
+                            .unwrap_or(3030);
                         serde_json::json!({
                             "address": addr,
                             "host_address": host,
@@ -3694,7 +3694,7 @@ function copyText(text){{navigator.clipboard.writeText(text).then(function(){{va
                     let transport = if host.contains(".onion") { "onion" } else { "clearnet" };
                     let rest_port: u16 = host.rsplit(':').next()
                         .and_then(|p| p.parse().ok())
-                        .unwrap_or(80);
+                        .unwrap_or(3030);
                     let is_bootstrap = bv_dir_api.contains(addr);
 
                     peers.push(serde_json::json!({
@@ -3746,7 +3746,7 @@ function copyText(text){{navigator.clipboard.writeText(text).then(function(){{va
 
                     let rest_port: u16 = host.rsplit(':').next()
                         .and_then(|p| p.parse().ok())
-                        .unwrap_or(80);
+                        .unwrap_or(3030);
 
                     active_peers.push(serde_json::json!({
                         "host": if host.contains("://") { host.clone() } else { format!("http://{}", host) },
