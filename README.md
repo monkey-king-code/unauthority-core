@@ -74,7 +74,7 @@ For full setup with Tor hidden service, systemd service, and monitoring, see the
 > **macOS users:** After moving the app to `/Applications`, run:
 > ```bash
 > xattr -cr /Applications/LOS\ Wallet.app
-> xattr -cr /Applications/LOS\ Validator\ Node.app
+> xattr -cr /Applications/LOS\ Validator\ \&\ Miner.app
 > ```
 > Or: System Settings → Privacy & Security → Open Anyway
 

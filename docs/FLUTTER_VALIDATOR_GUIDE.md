@@ -67,10 +67,10 @@ Go to **[GitHub Releases](https://github.com/monkey-king-code/unauthority-core/r
 
 **macOS:**
 1. Open the `.dmg` file
-2. Drag **LOS Validator Node** to `/Applications`
+2. Drag **LOS Validator & Miner** to `/Applications`
 3. **Important:** The binary is unsigned. Remove quarantine:
    ```
-   xattr -cr /Applications/LOS\ Validator\ Node.app
+   xattr -cr /Applications/LOS\ Validator\ \&\ Miner.app
    ```
    Or: **System Settings → Privacy & Security → Open Anyway**
 
@@ -337,7 +337,7 @@ When a new version is released:
 - Verify the seed peer list is reachable
 
 **"Node won't start"**
-- macOS: Run `xattr -cr /Applications/LOS\ Validator\ Node.app` to remove quarantine
+- macOS: Run `xattr -cr /Applications/LOS\ Validator\ \&\ Miner.app` to remove quarantine
 - Windows: Ensure both `.exe` files are unblocked (Properties → Unblock)
 - Linux: Ensure `los-node` has execute permission (`chmod +x los-node`)
 - Check that no other instance is already running
