@@ -1,0 +1,61 @@
+[package]
+name = "los-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+# ──────────────────────────────────────────────────────────────────
+# FUZZ TESTING — Zero production code changes.
+# All targets live in fuzz/ directory (excluded from --release builds).
+# Run: cargo +nightly fuzz run fuzz_block_deserialize
+# ──────────────────────────────────────────────────────────────────
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+los-core = { path = "../crates/los-core" }
+los-crypto = { path = "../crates/los-crypto" }
+los-consensus = { path = "../crates/los-consensus" }
+serde_json = "1.0"
+hex = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+
+[workspace]
+members = ["."]
+
+# Fuzz targets ─────────────────────────────────────────────────────
+
+[[bin]]
+name = "fuzz_block_deserialize"
+path = "fuzz_targets/fuzz_block_deserialize.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_block_signing_hash"
+path = "fuzz_targets/fuzz_block_signing_hash.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_address_validation"
+path = "fuzz_targets/fuzz_address_validation.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_mining_hash"
+path = "fuzz_targets/fuzz_mining_hash.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_ledger_process_block"
+path = "fuzz_targets/fuzz_ledger_process_block.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_abft_message"
+path = "fuzz_targets/fuzz_abft_message.rs"
+doc = false
+
+[patch.crates-io]
+pqcrypto-internals = { path = "../pqcrypto-internals-seeded" }
