@@ -5192,11 +5192,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // With LOS_SEED_PHRASE, the keypair is deterministic and matches genesis config.
     // No state mutation here — genesis loading already set is_validator + balance.
     if testnet_config::get_testnet_config().should_enable_consensus() {
-        let is_genesis_validator = ledger_state
-            .accounts
-            .get(&my_address)
-            .map(|a| a.is_validator && a.balance >= MIN_VALIDATOR_REGISTER_CIL)
-            .unwrap_or(false);
+        let is_genesis_validator = bootstrap_validators.contains(&my_address);
         if is_genesis_validator {
             println!(
                 "\u{2705} Node address {} matches genesis bootstrap validator (stake: {} LOS)",
@@ -6983,7 +6979,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The startup auto-register only set is_validator=true in ledger (before
     // Arc wrap), so here we complete the full registration with gossip broadcast.
     // Wait 10 seconds for peer connections to establish.
-    if startup_auto_registered {
+    // Broadcast VALIDATOR_REG on startup for ANY non-bootstrap mining validator.
+    // This covers both freshly auto-registered nodes AND restart scenarios where
+    // is_validator was already true from checkpoint but peers don't know our onion.
+    let should_startup_broadcast = startup_auto_registered
+        || (enable_mining
+            && !bootstrap_validators.contains(&my_address)
+            && safe_lock(&ledger)
+                .accounts
+                .get(&my_address)
+                .map(|a| a.is_validator)
+                .unwrap_or(false));
+    if should_startup_broadcast {
         let sr_ledger = Arc::clone(&ledger);
         let sr_sm = Arc::clone(&slashing_manager);
         let sr_rp = Arc::clone(&reward_pool);
