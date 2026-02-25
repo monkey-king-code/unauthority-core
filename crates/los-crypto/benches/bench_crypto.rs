@@ -8,10 +8,10 @@
 // Run: cargo bench -p los-crypto
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use los_crypto::{
-    generate_keypair, generate_keypair_from_seed, public_key_to_address,
-    sign_message, validate_address, verify_signature,
+    generate_keypair, generate_keypair_from_seed, public_key_to_address, sign_message,
+    validate_address, verify_signature,
 };
 
 // ─────────────────────────────────────────────────────────────────
@@ -44,9 +44,7 @@ fn bench_sign(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("Dilithium5", msg_size),
             &message,
-            |b, msg| {
-                b.iter(|| black_box(sign_message(msg, &kp.secret_key).unwrap()))
-            },
+            |b, msg| b.iter(|| black_box(sign_message(msg, &kp.secret_key).unwrap())),
         );
     }
     group.finish();
@@ -87,9 +85,7 @@ fn bench_address_validation(c: &mut Criterion) {
     let addr = public_key_to_address(&kp.public_key);
 
     let mut group = c.benchmark_group("crypto/validate_address");
-    group.bench_function("valid", |b| {
-        b.iter(|| black_box(validate_address(&addr)))
-    });
+    group.bench_function("valid", |b| b.iter(|| black_box(validate_address(&addr))));
     group.bench_function("invalid", |b| {
         b.iter(|| black_box(validate_address("LOSinvalid123456789")))
     });

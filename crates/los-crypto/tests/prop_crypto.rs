@@ -12,8 +12,8 @@
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 use los_crypto::{
-    generate_keypair, generate_keypair_from_seed, public_key_to_address,
-    sign_message, validate_address, verify_signature,
+    generate_keypair, generate_keypair_from_seed, public_key_to_address, sign_message,
+    validate_address, verify_signature,
 };
 use proptest::prelude::*;
 

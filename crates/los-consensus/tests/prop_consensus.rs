@@ -7,10 +7,8 @@
 // Run: cargo test --release -p los-consensus --test prop_consensus
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-use los_consensus::voting::{
-    calculate_voting_power, MIN_STAKE_CIL, MAX_STAKE_FOR_VOTING_CIL,
-};
 use los_consensus::abft::ABFTConsensus;
+use los_consensus::voting::{calculate_voting_power, MAX_STAKE_FOR_VOTING_CIL, MIN_STAKE_CIL};
 use proptest::prelude::*;
 
 // ─────────────────────────────────────────────────────────────────
@@ -102,7 +100,7 @@ fn min_distinct_voters(n: usize) -> usize {
         return 1;
     }
     let f = (n - 1) / 3; // max Byzantine faults tolerated
-    2 * f + 1             // quorum = 2f+1
+    2 * f + 1 // quorum = 2f+1
 }
 
 proptest! {
