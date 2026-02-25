@@ -4158,6 +4158,47 @@ function copyText(text){{navigator.clipboard.writeText(text).then(function(){{va
                                     stake_los,
                                     host_addr.as_deref().unwrap_or("none")
                                 );
+                            } else {
+                                // Already registered — re-broadcast VALIDATOR_REG to ensure
+                                // all peers know our endpoint (gossip is idempotent).
+                                // Receivers skip if already known, so this is safe.
+                                let is_val = safe_lock(&l_bg)
+                                    .accounts
+                                    .get(&my_addr_bg)
+                                    .map(|a| a.is_validator)
+                                    .unwrap_or(false);
+                                if is_val {
+                                    let host_addr = get_node_host_address();
+                                    let ts = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap_or_default()
+                                        .as_secs();
+                                    let reg_message =
+                                        format!("REGISTER_VALIDATOR:{}:{}", my_addr_bg, ts);
+                                    if let Ok(sig) =
+                                        los_crypto::sign_message(reg_message.as_bytes(), &sk_bg)
+                                    {
+                                        let reg_msg = serde_json::json!({
+                                            "type": "VALIDATOR_REG",
+                                            "address": my_addr_bg,
+                                            "public_key": hex::encode(&pk_bg),
+                                            "signature": hex::encode(&sig),
+                                            "timestamp": ts,
+                                            "host_address": host_addr,
+                                            "onion_address": host_addr,
+                                        });
+                                        let _ =
+                                            tx_bg.send(format!("VALIDATOR_REG:{}", reg_msg)).await;
+                                    }
+                                    // Also ensure our endpoint is stored locally
+                                    if let Some(ref host) = host_addr {
+                                        insert_validator_endpoint(
+                                            &mut safe_lock(&ve_bg),
+                                            my_addr_bg.clone(),
+                                            host.clone(),
+                                        );
+                                    }
+                                }
                             }
                         }
                     } else {
@@ -6954,14 +6995,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let sr_pk = keys.public_key.clone();
         let sr_tx = tx_out.clone();
         tokio::spawn(async move {
-            // Wait for peer connections to establish
-            tokio::time::sleep(Duration::from_secs(10)).await;
+            println!("🔧 Delayed startup broadcast: waiting 15s for peer connections...");
+            // Wait for peer connections to establish (Tor can be slow)
+            tokio::time::sleep(Duration::from_secs(15)).await;
+            println!("🔧 Delayed startup broadcast: timer elapsed, starting registration...");
 
             // 1. Register in SlashingManager
             {
                 let mut sm = safe_lock(&sr_sm);
                 if sm.get_profile(&sr_addr).is_none() {
                     sm.register_validator(sr_addr.clone());
+                    println!("🔧 [1/6] Registered in SlashingManager");
                 }
             }
             // 2. Register in RewardPool (non-genesis)
@@ -6973,11 +7017,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .unwrap_or(0);
                 let mut rp = safe_lock(&sr_rp);
                 rp.register_validator(&sr_addr, false, balance);
+                println!(
+                    "🔧 [2/6] Registered in RewardPool (balance: {} CIL)",
+                    balance
+                );
             }
             // 3. Track as locally-registered validator for heartbeats
             {
                 let mut lrv = safe_lock(&sr_lrv);
                 lrv.insert(sr_addr.clone());
+                println!("🔧 [3/6] Tracked in local_registered_validators");
             }
             // 4. Update aBFT validator set
             {
@@ -6989,12 +7038,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .map(|(addr, _)| addr.clone())
                     .collect();
                 validators.sort();
+                let count = validators.len();
                 safe_lock(&sr_abft).update_validator_set(validators);
+                println!("🔧 [4/6] Updated aBFT validator set ({} validators)", count);
             }
             // 5. Store our onion/host address in validator endpoints
             let host_addr = get_node_host_address();
             if let Some(ref host) = host_addr {
                 insert_validator_endpoint(&mut safe_lock(&sr_ve), sr_addr.clone(), host.clone());
+                println!("🔧 [5/6] Stored validator endpoint: {}", host);
+            } else {
+                println!("⚠️ [5/6] No host address available for validator endpoint");
             }
             // 6. Broadcast VALIDATOR_REG gossip to peers
             let ts = std::time::SystemTime::now()
@@ -7002,21 +7056,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap_or_default()
                 .as_secs();
             let reg_message = format!("REGISTER_VALIDATOR:{}:{}", sr_addr, ts);
-            if let Ok(sig) = los_crypto::sign_message(reg_message.as_bytes(), &sr_sk) {
-                let reg_msg = serde_json::json!({
-                    "type": "VALIDATOR_REG",
-                    "address": sr_addr,
-                    "public_key": hex::encode(&sr_pk),
-                    "signature": hex::encode(&sig),
-                    "timestamp": ts,
-                    "host_address": host_addr,
-                    "onion_address": host_addr,
-                });
-                let _ = sr_tx.send(format!("VALIDATOR_REG:{}", reg_msg)).await;
+            match los_crypto::sign_message(reg_message.as_bytes(), &sr_sk) {
+                Ok(sig) => {
+                    let reg_msg = serde_json::json!({
+                        "type": "VALIDATOR_REG",
+                        "address": sr_addr,
+                        "public_key": hex::encode(&sr_pk),
+                        "signature": hex::encode(&sig),
+                        "timestamp": ts,
+                        "host_address": host_addr,
+                        "onion_address": host_addr,
+                    });
+                    let _ = sr_tx.send(format!("VALIDATOR_REG:{}", reg_msg)).await;
+                    println!("🔧 [6/6] VALIDATOR_REG gossip sent");
+                }
+                Err(e) => {
+                    eprintln!("❌ [6/6] Failed to sign VALIDATOR_REG: {:?}", e);
+                }
             }
             SAVE_DIRTY.store(true, Ordering::Release);
             println!(
-                "📡 Startup validator broadcast sent: {} (host: {})",
+                "📡 Startup validator broadcast complete: {} (host: {})",
                 get_short_addr(&sr_addr),
                 host_addr.as_deref().unwrap_or("none")
             );
@@ -8288,7 +8348,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     };
 
                                     if already {
-                                        // Already registered on this node — silently ignore
+                                        // Already registered — but still update endpoint if missing.
+                                        // This handles the case where is_validator was set via
+                                        // state sync but no VALIDATOR_REG gossip was received yet.
+                                        let host = reg["host_address"]
+                                            .as_str()
+                                            .filter(|s| !s.is_empty())
+                                            .or_else(|| {
+                                                reg["onion_address"]
+                                                    .as_str()
+                                                    .filter(|s| !s.is_empty())
+                                            });
+                                        if let Some(h) = host {
+                                            let had = safe_lock(&ve_event).contains_key(&addr);
+                                            if !had {
+                                                insert_validator_endpoint(
+                                                    &mut safe_lock(&ve_event),
+                                                    addr.clone(),
+                                                    h.to_string(),
+                                                );
+                                                println!(
+                                                    "🌐 Updated endpoint for existing validator: {} → {}",
+                                                    get_short_addr(&addr),
+                                                    h
+                                                );
+                                                SAVE_DIRTY.store(true, Ordering::Release);
+                                            }
+                                        }
                                         continue;
                                     }
 
