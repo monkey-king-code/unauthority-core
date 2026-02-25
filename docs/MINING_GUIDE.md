@@ -292,6 +292,50 @@ fn verify(address: &str, epoch: u64, nonce: u64, difficulty_bits: u32) -> bool {
 
 ---
 
+## Bitcoin Mining vs LOS Mining
+
+| | **Bitcoin (BTC)** | **LOS (Unauthority)** |
+|---|---|---|
+| **Algorithm** | SHA-256 (double hash) | SHA3-256 (single hash) |
+| **Hardware** | ASIC-dominated (Antminer S21+) | CPU-only (SHA3 has no ASIC/GPU advantage) |
+| **Entry Cost** | $2,000–$15,000+ per ASIC miner | $0 — any computer with a CPU |
+| **Block Time** | ~10 minutes | 1 hour (epoch-based) |
+| **Reward** | 3.125 BTC/block (2024) | 100 LOS/epoch, shared among miners |
+| **Halving** | Every 210,000 blocks (~4 years) | Every 8,760 epochs (~1 year) |
+| **Total Supply** | 21,000,000 BTC | 21,936,236 LOS |
+| **Public Mining Pool** | ~100% (all mined) | 96.45% (21,158,413 LOS) |
+| **Mining Pool** | Required (solo mining impractical) | Not possible — proofs are address-bound |
+| **Deduplication** | None (unlimited blocks per miner) | 1 reward per address per epoch |
+| **Difficulty Adjustment** | Every 2,016 blocks (~2 weeks) | Every epoch (1 hour), ±1-4 bits |
+| **Finality** | ~60 minutes (6 confirmations) | ~2-3 seconds (aBFT consensus) |
+| **Node Requirement** | Separate (mining ≠ full node) | Integrated (miners MUST run a full node) |
+| **Energy** | ~150 TWh/year globally | Negligible (CPU-only, no ASIC farms) |
+| **Quantum Resistance** | None (ECDSA) | Dilithium5 (Post-Quantum) |
+| **Consensus** | Nakamoto PoW (longest chain) | aBFT + PoW mint (separate concerns) |
+
+### Key Differences Explained
+
+**1. CPU-Only Mining**
+Bitcoin mining is dominated by ASIC hardware costing thousands of dollars. LOS uses SHA3-256 which has minimal GPU/ASIC advantage — a $200 laptop mines as efficiently per-watt as a data center. This was a deliberate design choice for fair distribution.
+
+**2. No Mining Pools**
+In Bitcoin, solo miners almost never find blocks. Pools aggregate hashpower and split rewards. In LOS, each mining proof is cryptographically bound to a specific address and epoch: `SHA3(LOS_MINE_V1 ‖ chain_id ‖ address ‖ epoch ‖ nonce)`. Pools cannot work because proofs are non-transferable.
+
+**3. Separation of Concerns**
+Bitcoin uses PoW for both consensus AND distribution. LOS separates these:
+- **Consensus** → aBFT (fast finality, no energy waste)
+- **Distribution** → PoW mint (fair supply release to the public)
+
+This means LOS achieves 2-3 second finality while still using PoW for fair token distribution.
+
+**4. Aggressive Halving**
+Bitcoin halves every ~4 years. LOS halves every ~1 year (8,760 epochs). This means early miners are rewarded more aggressively, but the distribution completes faster — reaching >99% mined within ~15 years.
+
+**5. No Electricity Arms Race**
+Bitcoin's energy consumption rivals small countries because miners compete on hashrate. LOS mining has dynamic difficulty that targets ~10 miners per epoch. More miners = higher difficulty, but the CPU-only algorithm caps the energy ceiling naturally.
+
+---
+
 ## FAQ
 
 **Q: Can I mine on multiple machines?**

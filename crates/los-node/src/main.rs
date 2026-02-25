@@ -187,15 +187,39 @@ fn get_node_host_address() -> Option<String> {
         })
 }
 
+/// Ensure a host string includes a port suffix.
+/// If the host already contains `:port`, returns it unchanged.
+/// Otherwise appends `:default_port`.
+/// Examples:
+///   `ensure_host_port("abc.onion", 3030)` → `"abc.onion:3030"`
+///   `ensure_host_port("1.2.3.4:7030", 3030)` → `"1.2.3.4:7030"` (unchanged)
+fn ensure_host_port(host: &str, default_port: u16) -> String {
+    // Check if host already ends with `:digits`
+    if let Some(last) = host.rsplit(':').next() {
+        if last.chars().all(|c| c.is_ascii_digit()) && !last.is_empty() {
+            return host.to_string(); // already has a port
+        }
+    }
+    format!("{}:{}", host, default_port)
+}
+
 /// Resolve host address from a genesis wallet entry.
 /// Prefers host_address, falls back to onion_address.
+/// Appends rest_port if the host doesn't already have a port suffix.
 fn resolve_genesis_host(wallet: &genesis::GenesisWallet) -> Option<String> {
-    wallet
+    let host = wallet
         .host_address
         .as_ref()
         .filter(|s| !s.is_empty())
         .or(wallet.onion_address.as_ref().filter(|s| !s.is_empty()))
-        .cloned()
+        .cloned();
+    match host {
+        Some(h) => {
+            let port = wallet.rest_port.unwrap_or(3030);
+            Some(ensure_host_port(&h, port))
+        }
+        None => None,
+    }
 }
 
 /// Bootstrap nodes — resolved from env var OR auto-discovered from genesis config.
@@ -3070,12 +3094,14 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
             // 10. Broadcast to peers so they also register this validator
             // Use the registering validator's host_address if provided in the request,
             // then try onion_address, then fall back to this node's own host address.
-            let host_addr = req["host_address"]
+            let raw_host_addr = req["host_address"]
                 .as_str()
                 .filter(|s| !s.is_empty())
                 .map(|s| s.to_string())
                 .or_else(|| req["onion_address"].as_str().filter(|s| !s.is_empty()).map(|s| s.to_string()))
                 .or_else(get_node_host_address);
+            // Ensure host includes port for peer discovery
+            let host_addr = raw_host_addr.map(|h| ensure_host_port(&h, api_port));
             let reg_msg = serde_json::json!({
                 "type": "VALIDATOR_REG",
                 "address": address,
@@ -3084,6 +3110,7 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                 "timestamp": timestamp,
                 "host_address": host_addr,
                 "onion_address": host_addr, // backward compat for older nodes
+                "rest_port": api_port,
             });
             let _ = tx.send(format!("VALIDATOR_REG:{}", reg_msg)).await;
 
@@ -4117,7 +4144,8 @@ function copyText(text){{navigator.clipboard.writeText(text).then(function(){{va
                                     safe_lock(&abft_bg).update_validator_set(validators);
                                 }
                                 // 6. Store our onion address in validator endpoints
-                                let host_addr = get_node_host_address();
+                                let host_addr = get_node_host_address()
+                                    .map(|h| ensure_host_port(&h, api_port));
                                 if let Some(ref host) = host_addr {
                                     insert_validator_endpoint(
                                         &mut safe_lock(&ve_bg),
@@ -4143,6 +4171,7 @@ function copyText(text){{navigator.clipboard.writeText(text).then(function(){{va
                                         "timestamp": ts,
                                         "host_address": host_addr,
                                         "onion_address": host_addr,
+                                        "rest_port": api_port,
                                     });
                                     let _ = tx_bg.send(format!("VALIDATOR_REG:{}", reg_msg)).await;
                                 }
@@ -4168,7 +4197,8 @@ function copyText(text){{navigator.clipboard.writeText(text).then(function(){{va
                                     .map(|a| a.is_validator)
                                     .unwrap_or(false);
                                 if is_val {
-                                    let host_addr = get_node_host_address();
+                                    let host_addr = get_node_host_address()
+                                        .map(|h| ensure_host_port(&h, api_port));
                                     let ts = std::time::SystemTime::now()
                                         .duration_since(std::time::UNIX_EPOCH)
                                         .unwrap_or_default()
@@ -4186,6 +4216,7 @@ function copyText(text){{navigator.clipboard.writeText(text).then(function(){{va
                                             "timestamp": ts,
                                             "host_address": host_addr,
                                             "onion_address": host_addr,
+                                            "rest_port": api_port,
                                         });
                                         let _ =
                                             tx_bg.send(format!("VALIDATOR_REG:{}", reg_msg)).await;
@@ -5387,8 +5418,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 3. VALIDATOR_REG gossip messages
     // 4. PEER_LIST exchange messages
     let mut initial_endpoints = HashMap::<String, String>::new();
-    // Register this node's own host address
-    if let Some(our_host) = get_node_host_address() {
+    // Register this node's own host address (with port)
+    if let Some(raw_host) = get_node_host_address() {
+        let our_host = ensure_host_port(&raw_host, api_port);
         initial_endpoints.insert(my_address.clone(), our_host.clone());
         println!("🌐 Registered own host endpoint: {}", our_host);
     }
@@ -7001,6 +7033,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let sr_sk = Zeroizing::new(keys.secret_key.clone());
         let sr_pk = keys.public_key.clone();
         let sr_tx = tx_out.clone();
+        let sr_api_port = api_port;
         tokio::spawn(async move {
             println!("🔧 Delayed startup broadcast: waiting 15s for peer connections...");
             // Wait for peer connections to establish (Tor can be slow)
@@ -7050,7 +7083,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("🔧 [4/6] Updated aBFT validator set ({} validators)", count);
             }
             // 5. Store our onion/host address in validator endpoints
-            let host_addr = get_node_host_address();
+            let host_addr = get_node_host_address()
+                .map(|h| ensure_host_port(&h, sr_api_port));
             if let Some(ref host) = host_addr {
                 insert_validator_endpoint(&mut safe_lock(&sr_ve), sr_addr.clone(), host.clone());
                 println!("🔧 [5/6] Stored validator endpoint: {}", host);
@@ -7073,6 +7107,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         "timestamp": ts,
                         "host_address": host_addr,
                         "onion_address": host_addr,
+                        "rest_port": sr_api_port,
                     });
                     let _ = sr_tx.send(format!("VALIDATOR_REG:{}", reg_msg)).await;
                     println!("🔧 [6/6] VALIDATOR_REG gossip sent");
@@ -8358,7 +8393,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         // Already registered — but still update endpoint if missing.
                                         // This handles the case where is_validator was set via
                                         // state sync but no VALIDATOR_REG gossip was received yet.
-                                        let host = reg["host_address"]
+                                        let raw_host = reg["host_address"]
                                             .as_str()
                                             .filter(|s| !s.is_empty())
                                             .or_else(|| {
@@ -8366,18 +8401,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     .as_str()
                                                     .filter(|s| !s.is_empty())
                                             });
-                                        if let Some(h) = host {
+                                        if let Some(h) = raw_host {
+                                            // Use rest_port from gossip to ensure host has correct port
+                                            let port = reg["rest_port"].as_u64().unwrap_or(3030) as u16;
+                                            let host_with_port = ensure_host_port(h, port);
                                             let had = safe_lock(&ve_event).contains_key(&addr);
                                             if !had {
                                                 insert_validator_endpoint(
                                                     &mut safe_lock(&ve_event),
                                                     addr.clone(),
-                                                    h.to_string(),
+                                                    host_with_port.clone(),
                                                 );
                                                 println!(
                                                     "🌐 Updated endpoint for existing validator: {} → {}",
                                                     get_short_addr(&addr),
-                                                    h
+                                                    host_with_port
                                                 );
                                                 SAVE_DIRTY.store(true, Ordering::Release);
                                             }
@@ -8434,13 +8472,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                     // Extract and store host address for peer discovery
                                     // Accepts host_address (preferred) or onion_address (backward compat)
-                                    let host = reg["host_address"]
+                                    let raw_host = reg["host_address"]
                                         .as_str()
                                         .filter(|s| !s.is_empty())
                                         .or_else(|| reg["onion_address"].as_str().filter(|s| !s.is_empty()));
-                                    if let Some(h) = host {
-                                        insert_validator_endpoint(&mut safe_lock(&ve_event), addr.clone(), h.to_string());
-                                        println!("🌐 Discovered validator endpoint: {} → {}", get_short_addr(&addr), h);
+                                    if let Some(h) = raw_host {
+                                        // Use rest_port from gossip to ensure host has correct port
+                                        let port = reg["rest_port"].as_u64().unwrap_or(3030) as u16;
+                                        let host_with_port = ensure_host_port(h, port);
+                                        insert_validator_endpoint(&mut safe_lock(&ve_event), addr.clone(), host_with_port.clone());
+                                        println!("🌐 Discovered validator endpoint: {} → {}", get_short_addr(&addr), host_with_port);
                                     }
                                 },
                                 Err(e) => {

@@ -506,29 +506,105 @@ Connected peers and validator endpoints.
 **Response:**
 ```json
 {
-  "peer_count": 4,
+  "peer_count": 5,
   "peers": [
     {
       "address": "LOSX7dStdPkS9U4MFCmDQfpmvrbMa5WAZfQX1",
+      "host_address": "kljkjq...kyad.onion:3030",
+      "onion_address": "kljkjq...kyad.onion:3030",
       "is_validator": true,
-      "onion_address": "f3zfmh...nid.onion",
       "self": true,
       "short_address": "los_X7dStdPk"
     }
   ],
-  "validator_endpoint_count": 4,
+  "validator_endpoint_count": 5,
   "validator_endpoints": [
     {
       "address": "LOSX7dSt...",
-      "onion_address": "f3zfmh...nid.onion"
+      "host_address": "kljkjq...kyad.onion:3030",
+      "onion_address": "kljkjq...kyad.onion:3030"
     }
   ]
 }
 ```
 
+> **Port in host_address:** The `host_address` and `onion_address` fields include the REST port suffix (e.g. `abc.onion:3030`). This is the actual port the validator's REST API listens on. Tor's `HiddenServicePort` maps the `.onion` virtual port to the local port — port 80 is **never** used.
+
 ### GET `/network/peers`
 
-Network-level peer discovery with endpoint information.
+Network-level peer discovery with endpoint information. Designed for Flutter app peer discovery. Each entry includes `transport` ("onion" or "clearnet"), `rest_port` (actual REST API port), and `stake_los`.
+
+**Response:**
+```json
+{
+  "version": 1,
+  "total": 5,
+  "timestamp": 1740500000,
+  "endpoints": [
+    {
+      "address": "LOSX7dStdPkS9U4MFCmDQfpmvrbMa5WAZfQX1",
+      "host_address": "kljkjq...kyad.onion:3030",
+      "onion_address": "kljkjq...kyad.onion:3030",
+      "transport": "onion",
+      "rest_port": 3030,
+      "stake_los": 1000,
+      "reachable": true
+    }
+  ]
+}
+```
+
+> **Note:** `rest_port` is extracted from the `host_address` port suffix. If the host has no port suffix, it defaults to `80`. The `transport` field helps Flutter apps determine whether to use a SOCKS5 proxy (for `.onion`) or direct HTTP (for clearnet).
+
+### GET `/directory/api/peers`
+
+All known peers as JSON — used by the embedded Peer Directory.
+
+**Response:**
+```json
+{
+  "network": "mainnet",
+  "active_count": 5,
+  "total_count": 5,
+  "updated_at": "2026-02-25T12:00:00Z",
+  "peers": [
+    {
+      "address": "LOSX7dStdPkS9U4MFCmDQfpmvrbMa5WAZfQX1",
+      "host": "http://kljkjq...kyad.onion:3030",
+      "transport": "onion",
+      "active": true,
+      "stake_los": 1000,
+      "rest_port": 3030,
+      "is_bootstrap": true
+    }
+  ]
+}
+```
+
+### GET `/directory/api/active`
+
+Active (reachable) peers only — optimized for app bootstrapping.
+
+**Response:**
+```json
+{
+  "network": "mainnet",
+  "active_count": 5,
+  "updated_at": "2026-02-25T12:00:00Z",
+  "peers": [
+    {
+      "host": "http://kljkjq...kyad.onion:3030",
+      "address": "LOSX7dStdPkS9U4MFCmDQfpmvrbMa5WAZfQX1",
+      "transport": "onion",
+      "rest_port": 3030
+    }
+  ]
+}
+```
+
+### GET `/directory`
+
+HTML Peer Directory page — a human-readable dashboard showing all known validators, their `.onion` addresses, active/inactive status, and stake amounts. Accessible via browser.
 
 ### GET `/mempool/stats`
 
