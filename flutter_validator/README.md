@@ -34,7 +34,7 @@ Pre-built releases for macOS, Windows, and Linux:
 
 ### Platform Notes
 
-> **macOS:** Remove quarantine: `xattr -cr /Applications/LOS\ Validator\ Node.app` (required for unsigned apps)  
+> **macOS:** Remove quarantine: `xattr -cr /Applications/LOS\ Validator\ \&\ Miner.app` (required for unsigned apps)  
 > Or: System Settings → Privacy & Security → Open Anyway
 >
 > **Windows:** Right-click both `flutter_validator.exe` and `los-node.exe` → Properties → Unblock, then launch. If SmartScreen appears: click "More info" → "Run anyway"  
