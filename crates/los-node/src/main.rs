@@ -4144,8 +4144,8 @@ function copyText(text){{navigator.clipboard.writeText(text).then(function(){{va
                                     safe_lock(&abft_bg).update_validator_set(validators);
                                 }
                                 // 6. Store our onion address in validator endpoints
-                                let host_addr = get_node_host_address()
-                                    .map(|h| ensure_host_port(&h, api_port));
+                                let host_addr =
+                                    get_node_host_address().map(|h| ensure_host_port(&h, api_port));
                                 if let Some(ref host) = host_addr {
                                     insert_validator_endpoint(
                                         &mut safe_lock(&ve_bg),
@@ -7083,8 +7083,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("🔧 [4/6] Updated aBFT validator set ({} validators)", count);
             }
             // 5. Store our onion/host address in validator endpoints
-            let host_addr = get_node_host_address()
-                .map(|h| ensure_host_port(&h, sr_api_port));
+            let host_addr = get_node_host_address().map(|h| ensure_host_port(&h, sr_api_port));
             if let Some(ref host) = host_addr {
                 insert_validator_endpoint(&mut safe_lock(&sr_ve), sr_addr.clone(), host.clone());
                 println!("🔧 [5/6] Stored validator endpoint: {}", host);
