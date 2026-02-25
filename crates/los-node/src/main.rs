@@ -4063,9 +4063,11 @@ function copyText(text){{navigator.clipboard.writeText(text).then(function(){{va
                             let needs_register = {
                                 let l = safe_lock(&l_bg);
                                 match l.accounts.get(&my_addr_bg) {
-                                    Some(acc) => !acc.is_validator
-                                        && acc.balance >= MIN_VALIDATOR_REGISTER_CIL
-                                        && !bv_bg.contains(&my_addr_bg),
+                                    Some(acc) => {
+                                        !acc.is_validator
+                                            && acc.balance >= MIN_VALIDATOR_REGISTER_CIL
+                                            && !bv_bg.contains(&my_addr_bg)
+                                    }
                                     None => false,
                                 }
                             };
@@ -4106,7 +4108,8 @@ function copyText(text){{navigator.clipboard.writeText(text).then(function(){{va
                                         .accounts
                                         .iter()
                                         .filter(|(_, a)| {
-                                            a.balance >= MIN_VALIDATOR_REGISTER_CIL && a.is_validator
+                                            a.balance >= MIN_VALIDATOR_REGISTER_CIL
+                                                && a.is_validator
                                         })
                                         .map(|(addr, _)| addr.clone())
                                         .collect();
@@ -4141,9 +4144,7 @@ function copyText(text){{navigator.clipboard.writeText(text).then(function(){{va
                                         "host_address": host_addr,
                                         "onion_address": host_addr,
                                     });
-                                    let _ = tx_bg
-                                        .send(format!("VALIDATOR_REG:{}", reg_msg))
-                                        .await;
+                                    let _ = tx_bg.send(format!("VALIDATOR_REG:{}", reg_msg)).await;
                                 }
                                 SAVE_DIRTY.store(true, Ordering::Release);
                                 let stake_los = safe_lock(&l_bg)
@@ -5251,13 +5252,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // If this node's address already has balance >= 1 LOS (from previous
     // mining session) but isn't flagged as a validator, auto-register it.
     // This handles the restart case where the node mined previously.
-    if enable_mining && !bootstrap_validators.contains(&my_address) {
-        let should_auto_register = ledger_state
+    let startup_auto_registered = if enable_mining && !bootstrap_validators.contains(&my_address) {
+        let should = ledger_state
             .accounts
             .get(&my_address)
             .map(|acc| !acc.is_validator && acc.balance >= MIN_VALIDATOR_REGISTER_CIL)
             .unwrap_or(false);
-        if should_auto_register {
+        if should {
             let balance_los = ledger_state
                 .accounts
                 .get(&my_address)
@@ -5271,8 +5272,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 get_short_addr(&my_address),
                 balance_los
             );
+            true
+        } else {
+            false
         }
-    }
+    } else {
+        false
+    };
 
     let reward_pool = Arc::new(Mutex::new(reward_pool_state));
     println!(
@@ -6928,6 +6934,94 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "port" => api_port,
         "onion" => onion_addr.as_deref().unwrap_or("none")
     );
+
+    // ── DELAYED STARTUP VALIDATOR BROADCAST ─────────────────────────────
+    // If the node was auto-registered at startup (restart with existing balance),
+    // we need to broadcast VALIDATOR_REG to the network AFTER peers connect,
+    // AND register in SlashingManager / RewardPool / aBFT / endpoints.
+    // The startup auto-register only set is_validator=true in ledger (before
+    // Arc wrap), so here we complete the full registration with gossip broadcast.
+    // Wait 10 seconds for peer connections to establish.
+    if startup_auto_registered {
+        let sr_ledger = Arc::clone(&ledger);
+        let sr_sm = Arc::clone(&slashing_manager);
+        let sr_rp = Arc::clone(&reward_pool);
+        let sr_abft = Arc::clone(&abft_consensus);
+        let sr_ve = Arc::clone(&validator_endpoints);
+        let sr_lrv = Arc::clone(&local_registered_validators);
+        let sr_addr = my_address.clone();
+        let sr_sk = Zeroizing::new(keys.secret_key.clone());
+        let sr_pk = keys.public_key.clone();
+        let sr_tx = tx_out.clone();
+        tokio::spawn(async move {
+            // Wait for peer connections to establish
+            tokio::time::sleep(Duration::from_secs(10)).await;
+
+            // 1. Register in SlashingManager
+            {
+                let mut sm = safe_lock(&sr_sm);
+                if sm.get_profile(&sr_addr).is_none() {
+                    sm.register_validator(sr_addr.clone());
+                }
+            }
+            // 2. Register in RewardPool (non-genesis)
+            {
+                let balance = safe_lock(&sr_ledger)
+                    .accounts
+                    .get(&sr_addr)
+                    .map(|a| a.balance)
+                    .unwrap_or(0);
+                let mut rp = safe_lock(&sr_rp);
+                rp.register_validator(&sr_addr, false, balance);
+            }
+            // 3. Track as locally-registered validator for heartbeats
+            {
+                let mut lrv = safe_lock(&sr_lrv);
+                lrv.insert(sr_addr.clone());
+            }
+            // 4. Update aBFT validator set
+            {
+                let l = safe_lock(&sr_ledger);
+                let mut validators: Vec<String> = l
+                    .accounts
+                    .iter()
+                    .filter(|(_, a)| a.balance >= MIN_VALIDATOR_REGISTER_CIL && a.is_validator)
+                    .map(|(addr, _)| addr.clone())
+                    .collect();
+                validators.sort();
+                safe_lock(&sr_abft).update_validator_set(validators);
+            }
+            // 5. Store our onion/host address in validator endpoints
+            let host_addr = get_node_host_address();
+            if let Some(ref host) = host_addr {
+                insert_validator_endpoint(&mut safe_lock(&sr_ve), sr_addr.clone(), host.clone());
+            }
+            // 6. Broadcast VALIDATOR_REG gossip to peers
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let reg_message = format!("REGISTER_VALIDATOR:{}:{}", sr_addr, ts);
+            if let Ok(sig) = los_crypto::sign_message(reg_message.as_bytes(), &sr_sk) {
+                let reg_msg = serde_json::json!({
+                    "type": "VALIDATOR_REG",
+                    "address": sr_addr,
+                    "public_key": hex::encode(&sr_pk),
+                    "signature": hex::encode(&sig),
+                    "timestamp": ts,
+                    "host_address": host_addr,
+                    "onion_address": host_addr,
+                });
+                let _ = sr_tx.send(format!("VALIDATOR_REG:{}", reg_msg)).await;
+            }
+            SAVE_DIRTY.store(true, Ordering::Release);
+            println!(
+                "📡 Startup validator broadcast sent: {} (host: {})",
+                get_short_addr(&sr_addr),
+                host_addr.as_deref().unwrap_or("none")
+            );
+        });
+    }
 
     let mut stdin = BufReader::new(io::stdin()).lines();
     let mut stdin_closed = false; // Track EOF — prevents tokio::select! panic in headless mode
