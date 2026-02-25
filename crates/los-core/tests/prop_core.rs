@@ -12,8 +12,7 @@ use los_core::pow_mint::{
     compute_mining_hash, count_leading_zero_bits, verify_mining_hash, MiningState,
 };
 use los_core::{
-    Block, BlockType, Ledger, CIL_PER_LOS, TOTAL_SUPPLY_CIL,
-    BASE_FEE_CIL, MIN_POW_DIFFICULTY_BITS,
+    Block, BlockType, Ledger, BASE_FEE_CIL, CIL_PER_LOS, MIN_POW_DIFFICULTY_BITS, TOTAL_SUPPLY_CIL,
 };
 use proptest::prelude::*;
 
@@ -35,19 +34,30 @@ fn arb_block_type() -> impl Strategy<Value = BlockType> {
 
 fn arb_block() -> impl Strategy<Value = Block> {
     (
-        "LOS[A-Za-z0-9]{20,40}",           // account
-        "[0-9a-f]{64}",                      // previous
+        "LOS[A-Za-z0-9]{20,40}", // account
+        "[0-9a-f]{64}",          // previous
         arb_block_type(),
-        0u128..=TOTAL_SUPPLY_CIL,           // amount
+        0u128..=TOTAL_SUPPLY_CIL,            // amount
         ".*",                                // link
-        "[0-9a-f]{0,128}",                  // signature
-        "[0-9a-f]{0,128}",                  // public_key
+        "[0-9a-f]{0,128}",                   // signature
+        "[0-9a-f]{0,128}",                   // public_key
         any::<u64>(),                        // work
         1_700_000_000u64..=2_000_000_000u64, // timestamp
-        0u128..=BASE_FEE_CIL * 1000,        // fee
+        0u128..=BASE_FEE_CIL * 1000,         // fee
     )
         .prop_map(
-            |(account, previous, block_type, amount, link, signature, public_key, work, timestamp, fee)| {
+            |(
+                account,
+                previous,
+                block_type,
+                amount,
+                link,
+                signature,
+                public_key,
+                work,
+                timestamp,
+                fee,
+            )| {
                 Block {
                     account,
                     previous,

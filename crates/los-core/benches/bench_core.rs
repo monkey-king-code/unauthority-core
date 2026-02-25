@@ -6,9 +6,9 @@
 // Run: cargo bench -p los-core
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use los_core::pow_mint::{compute_mining_hash, count_leading_zero_bits, MiningState};
-use los_core::{Block, BlockType, Ledger, AccountState, CIL_PER_LOS};
+use los_core::{AccountState, Block, BlockType, Ledger, CIL_PER_LOS};
 
 // ─────────────────────────────────────────────────────────────────
 // BLOCK HASH BENCHMARKS

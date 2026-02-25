@@ -6,9 +6,9 @@
 // Run: cargo bench -p los-consensus
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
-use los_consensus::voting::{calculate_voting_power, VotingSystem, ValidatorVote};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use los_consensus::abft::{ABFTConsensus, Block as AbftBlock};
+use los_consensus::voting::{calculate_voting_power, ValidatorVote, VotingSystem};
 
 // ─────────────────────────────────────────────────────────────────
 // VOTING POWER BENCHMARKS
@@ -82,14 +82,7 @@ fn bench_consensus_new(c: &mut Criterion) {
         group.bench_with_input(
             BenchmarkId::new("validators", num_validators),
             &num_validators,
-            |b, &n| {
-                b.iter(|| {
-                    black_box(ABFTConsensus::new(
-                        "validator_0".to_string(),
-                        n,
-                    ))
-                })
-            },
+            |b, &n| b.iter(|| black_box(ABFTConsensus::new("validator_0".to_string(), n))),
         );
     }
     group.finish();
@@ -104,23 +97,20 @@ fn bench_voting_summary(c: &mut Criterion) {
     let mut group = c.benchmark_group("voting/summary");
 
     for num_validators in [4usize, 20, 100, 500] {
-        group.bench_function(
-            BenchmarkId::new("validators", num_validators),
-            |b| {
-                b.iter(|| {
-                    let mut system = VotingSystem::new();
-                    for i in 0..num_validators {
-                        let _ = system.register_validator(
-                            format!("LOSval{:06}", i),
-                            ((i as u128) + 1) * 1_000 * cil_per_los,
-                            "propose_1".to_string(),
-                            true,
-                        );
-                    }
-                    black_box(system.get_summary())
-                })
-            },
-        );
+        group.bench_function(BenchmarkId::new("validators", num_validators), |b| {
+            b.iter(|| {
+                let mut system = VotingSystem::new();
+                for i in 0..num_validators {
+                    let _ = system.register_validator(
+                        format!("LOSval{:06}", i),
+                        ((i as u128) + 1) * 1_000 * cil_per_los,
+                        "propose_1".to_string(),
+                        true,
+                    );
+                }
+                black_box(system.get_summary())
+            })
+        });
     }
     group.finish();
 }
