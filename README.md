@@ -229,6 +229,7 @@ Full documentation with request/response examples: [API Reference](docs/API_REFE
 | [API Reference](docs/API_REFERENCE.md) | All 35+ REST & gRPC endpoints with examples |
 | [Tor Setup](docs/TOR_SETUP.md) | Tor hidden service configuration & troubleshooting |
 | [Whitepaper](docs/WHITEPAPER.md) | Technical whitepaper: design, consensus, economics |
+| [Genesis Transparency](docs/GENESIS_TRANSPARENCY.md) | All genesis wallet addresses & public balance verification API |
 | [Architecture](docs/ARCHITECTURE.md) | System design, crate map, data flow diagrams |
 | [Exchange Integration](docs/EXCHANGE_INTEGRATION.md) | RPC documentation for exchanges & integrators |
 | [Smart Contracts](docs/SMART_CONTRACTS.md) | Write, compile, and deploy WASM contracts on UVM |
