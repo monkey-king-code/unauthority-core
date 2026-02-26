@@ -436,7 +436,7 @@ Response:
 ```json
 {
   "status": "healthy",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "uptime_seconds": 86400,
   "chain": { "accounts": 8, "blocks": 42, "id": "los-mainnet" },
   "database": { "accounts_count": 8, "blocks_count": 42, "size_on_disk": 524287 }

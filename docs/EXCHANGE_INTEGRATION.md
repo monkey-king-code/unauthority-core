@@ -457,7 +457,7 @@ GET /health
 ```json
 {
   "status": "healthy",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "timestamp": 1771277598,
   "uptime_seconds": 86400,
   "chain": {
@@ -482,7 +482,7 @@ GET /node-info
 ```json
 {
   "status": "ok",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "network": "mainnet",
   "node_id": "validator-1",
   "chain_id": "los-mainnet",
