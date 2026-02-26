@@ -1,4 +1,4 @@
-# Validator Guide — Unauthority (LOS) v2.1.0
+# Validator Guide — Unauthority (LOS) v2.2.0
 
 This guide covers everything you need to run a validator node on the Unauthority network: installation, Tor setup, configuration, registration, rewards, monitoring, and maintenance.
 

@@ -1,4 +1,4 @@
-# Tor Setup Guide — Unauthority (LOS) v2.1.0
+# Tor Setup Guide — Unauthority (LOS) v2.2.0
 
 Complete guide to configuring Tor hidden services for Unauthority validators and clients.
 
@@ -241,7 +241,7 @@ curl http://127.0.0.1:3030/health
 ```json
 {
   "status": "ok",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "network": "mainnet",
   "accounts": 8,
   "blocks": 0,
