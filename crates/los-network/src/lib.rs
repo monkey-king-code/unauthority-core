@@ -228,6 +228,8 @@ impl LosNode {
                                 LAST_WARN.store(now, std::sync::atomic::Ordering::Relaxed);
                                 eprintln!("⚠️ Gossipsub: InsufficientPeers — messages not being delivered (connected: {})", connected_peers.len());
                             }
+                        } else if err_str.contains("Duplicate") {
+                            // GossipSub duplicate — normal in small mesh networks, suppress log spam.
                         } else {
                             eprintln!("⚠️ Broadcast Error: {:?}", e);
                         }

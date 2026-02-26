@@ -8,7 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_256};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 /// Maximum allowed timestamp drift from current time (5 minutes)
 pub const MAX_TIMESTAMP_DRIFT_SECS: u64 = 300;
@@ -336,6 +336,9 @@ impl Ledger {
     /// BTreeMap guarantees deterministic iteration order, so all nodes
     /// with the same state will produce the same root hash.
     ///
+    /// IMMUTABLE: Do NOT add fields to this hash without a coordinated network upgrade.
+    /// Changing the hash algorithm breaks state root comparison between nodes.
+    ///
     /// Used by:
     /// - Checkpoint creation (state snapshot proof)
     /// - ID messages (state comparison before sync)
@@ -347,8 +350,43 @@ impl Ledger {
         for (addr, state) in &self.accounts {
             hasher.update(addr.as_bytes());
             hasher.update(state.balance.to_le_bytes());
+            hasher.update(state.block_count.to_le_bytes());
+            hasher.update(state.head.as_bytes());
         }
         hex::encode(hasher.finalize())
+    }
+
+    /// Total number of blocks across all account chains.
+    /// This counts ONLY blocks that are part of valid account chains,
+    /// excluding any orphaned blocks in the l.blocks HashMap.
+    pub fn total_chain_blocks(&self) -> u64 {
+        self.accounts.values().map(|a| a.block_count).sum()
+    }
+
+    /// Remove orphaned blocks from l.blocks that aren't part of any account chain.
+    /// Walks each account chain from head backwards via `previous` links and
+    /// retains only reachable blocks. Returns the number of orphans removed.
+    ///
+    /// SAFETY: This only removes blocks not reachable from any account head.
+    /// Valid blocks in proper chains are never affected.
+    pub fn remove_orphaned_blocks(&mut self) -> usize {
+        let mut valid_hashes: HashSet<String> = HashSet::new();
+        for acct in self.accounts.values() {
+            let mut current = acct.head.clone();
+            while current != "0" && !current.is_empty() {
+                if !valid_hashes.insert(current.clone()) {
+                    break; // Already visited (prevents infinite loops)
+                }
+                if let Some(blk) = self.blocks.get(&current) {
+                    current = blk.previous.clone();
+                } else {
+                    break; // Chain broken — stop walking
+                }
+            }
+        }
+        let before = self.blocks.len();
+        self.blocks.retain(|hash, _| valid_hashes.contains(hash));
+        before - self.blocks.len()
     }
 
     pub fn process_block(&mut self, block: &Block) -> Result<ProcessResult, String> {
