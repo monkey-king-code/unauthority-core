@@ -1868,7 +1868,7 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                     "network": network,
                     "address": my_addr_info,
                     "version": env!("CARGO_PKG_VERSION"),
-                    "block_height": l_guard.blocks.len(),
+                    "block_height": l_guard.total_chain_blocks(),
                     "validator_count": validator_count,
                     "peer_count": peer_count,
                     "total_supply": format_balance_precise(total_supply),
@@ -2095,7 +2095,7 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
             let latest = l_guard.blocks.values().max_by_key(|b| b.timestamp);
             if let Some(b) = latest {
                 api_json(serde_json::json!({
-                    "height": l_guard.blocks.len(),
+                    "height": l_guard.total_chain_blocks(),
                     "hash": b.calculate_hash(),
                     "account": b.account,
                     "previous": b.previous,
@@ -2278,10 +2278,32 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
         .and(with_state(l_blocks))
         .map(|l: Arc<Mutex<Ledger>>| {
             let l_guard = safe_lock(&l);
-            // Sort by timestamp descending for deterministic recent blocks
-            let mut block_list: Vec<(&String, &Block)> = l_guard.blocks.iter().collect();
+            // Collect only blocks that are part of valid account chains.
+            // Walk each account's chain from head backwards to gather chain block hashes.
+            let mut chain_hashes: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+            for acct in l_guard.accounts.values() {
+                let mut current = acct.head.clone();
+                while current != "0" && !current.is_empty() {
+                    if !chain_hashes.insert(current.clone()) {
+                        break;
+                    }
+                    if let Some(blk) = l_guard.blocks.get(&current) {
+                        current = blk.previous.clone();
+                    } else {
+                        break;
+                    }
+                }
+            }
+            // Filter and sort chain blocks by timestamp descending
+            let mut block_list: Vec<(&String, &Block)> = l_guard
+                .blocks
+                .iter()
+                .filter(|(hash, _)| chain_hashes.contains(*hash))
+                .collect();
             block_list.sort_by(|a, b| b.1.timestamp.cmp(&a.1.timestamp));
-            let total_blocks = l_guard.blocks.len();
+            // total_blocks = sum of all account chain block counts (excludes orphans)
+            let total_blocks = l_guard.total_chain_blocks();
             let blocks: Vec<serde_json::Value> = block_list
                 .iter()
                 .take(10) // Last 10 blocks by timestamp
@@ -2296,7 +2318,7 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                     serde_json::json!({
                         "hash": hash,
                         "height": account_block_count,
-                        "global_index": total_blocks - i,
+                        "global_index": total_blocks as usize - i,
                         "timestamp": b.timestamp,
                         "transactions_count": 1,
                         "account": b.account,
@@ -2341,10 +2363,22 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                 });
 
             // Get transaction history for this account
-            // Include from, to, timestamp fields + resolve actual
-            // sender for Receive blocks (look up originating Send block)
+            // Walk the account chain from head backwards via `previous` links.
+            // This ensures ONLY blocks in the valid chain are shown (no orphans).
             let mut transactions: Vec<serde_json::Value> = Vec::new();
-            for (hash, block) in l_guard.blocks.iter() {
+            let mut chain_blocks: Vec<(String, Block)> = Vec::new();
+            {
+                let mut current = state.head.clone();
+                while current != "0" && !current.is_empty() {
+                    if let Some(blk) = l_guard.blocks.get(&current) {
+                        chain_blocks.push((current.clone(), blk.clone()));
+                        current = blk.previous.clone();
+                    } else {
+                        break;
+                    }
+                }
+            }
+            for (hash, block) in chain_blocks.iter() {
                 if block.account == addr {
                     // Resolve `from` address: for Receive blocks, look up the Send block
                     // to get the actual sender instead of showing "SYSTEM"
@@ -2551,7 +2585,7 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                 "chain": {
                     "id": if los_core::is_mainnet_build() { "los-mainnet" } else { "los-testnet" },
                     "accounts": l_guard.accounts.len(),
-                    "blocks": l_guard.blocks.len()
+                    "blocks": l_guard.total_chain_blocks()
                 },
                 "database": {
                     "accounts_count": db_stats.accounts_count,
@@ -4552,6 +4586,12 @@ async fn rest_sync_from_peer(
             l.accumulated_fees_cil = incoming.accumulated_fees_cil;
         }
 
+        // Sanitize: remove orphaned blocks after merging
+        let orphans = l.remove_orphaned_blocks();
+        if orphans > 0 {
+            println!("🧹 REST sync: removed {} orphaned block(s)", orphans);
+        }
+
         SAVE_DIRTY.store(true, Ordering::Release);
     }
 
@@ -5261,6 +5301,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Load ledger and genesis BEFORE wrapping in Arc to prevent race condition
     let mut ledger_state = load_from_disk(&database);
+
+    // Sanitize: remove orphaned blocks from l.blocks that aren't part of any account chain.
+    // This cleans up ghost blocks caused by failed process_block() insertions or sync artifacts.
+    let orphans_removed = ledger_state.remove_orphaned_blocks();
+    if orphans_removed > 0 {
+        println!(
+            "🧹 Startup: removed {} orphaned block(s) from ledger",
+            orphans_removed
+        );
+    }
 
     // Collect genesis validator → onion_address mappings during genesis loading.
     // Used to seed validator_endpoints AFTER it's created downstream.
@@ -8042,6 +8092,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                 }
                                                 println!("📚 State Adoption Complete: {} new blocks merged, {} crypto-invalid skipped",
                                                     added_count, crypto_invalid);
+                                                // Sanitize: remove orphaned blocks after state adoption
+                                                let orphans = l.remove_orphaned_blocks();
+                                                if orphans > 0 {
+                                                    println!("🧹 Removed {} orphaned block(s) after sync", orphans);
+                                                }
                                             } else {
                                                 println!("🚫 Rejected state adoption: too many invalid blocks ({}/{}, max {})",
                                                     crypto_invalid, incoming_block_count, max_invalid);
@@ -8134,6 +8189,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                         if added_count > 0 {
                                             SAVE_DIRTY.store(true, Ordering::Release);
+                                            // Sanitize: remove orphaned blocks after slow-path sync
+                                            // NOTE: reuse existing `l` — do NOT re-acquire ledger lock (deadlock)
+                                            let orphans = l.remove_orphaned_blocks();
+                                            if orphans > 0 {
+                                                println!("🧹 Sync: removed {} orphaned block(s)", orphans);
+                                            }
                                             println!("📚 Sync Complete: {} new blocks validated", added_count);
                                         }
                                     }
@@ -9865,31 +9926,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             }
                                         }
                                         Err(e) => {
-                                            // Chain sequence error? Try direct ledger insertion.
-                                            // This happens when gossip delivers mint blocks out-of-order
-                                            // or when this node missed intermediate blocks. The block is
-                                            // already cryptographically validated (PoW + sig + PoW hash),
-                                            // so we can safely credit the miner directly.
+                                            // Chain sequence error — don't force-insert (creates orphaned ghost blocks).
+                                            // The block will be recovered via periodic SYNC_REQUEST or REST sync
+                                            // which delivers the complete ordered state including missed blocks.
+                                            let mut ms = safe_lock(&mining_state);
+                                            ms.current_epoch_miners.remove(&mint_blk.account);
                                             if e.contains("Chain Error") {
-                                                if let Some(acct) = l.accounts.get_mut(&mint_blk.account) {
-                                                    acct.balance = acct.balance.saturating_add(mint_blk.amount);
-                                                    acct.head = hash.clone();
-                                                    acct.block_count += 1;
-                                                }
-                                                // Deduct from remaining supply
-                                                l.distribution.remaining_supply = l.distribution.remaining_supply.saturating_sub(mint_blk.amount);
-                                                l.blocks.insert(hash.clone(), mint_blk.clone());
-                                                SAVE_DIRTY.store(true, Ordering::Release);
-                                                let reward_los = mint_blk.amount / CIL_PER_LOS;
-                                                println!("⛏️  Replicated MINE_BLOCK (direct): {} → {} LOS (epoch {}, chain gap recovered)",
-                                                    get_short_addr(&mint_blk.account), reward_los, proof_epoch);
-                                                if let Err(e) = database.save_block(&hash, &mint_blk) {
-                                                    eprintln!("⚠️ DB save error for replicated mine block: {}", e);
-                                                }
+                                                println!("⚠️ MINE_BLOCK chain gap for {} epoch {} — will recover via sync",
+                                                    get_short_addr(&mint_blk.account), proof_epoch);
                                             } else {
-                                                // Other errors: revert mining state registration
-                                                let mut ms = safe_lock(&mining_state);
-                                                ms.current_epoch_miners.remove(&mint_blk.account);
                                                 println!("❌ Failed to replicate MINE_BLOCK: {}", e);
                                             }
                                         }
