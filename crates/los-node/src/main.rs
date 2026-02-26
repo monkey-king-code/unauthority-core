@@ -2812,7 +2812,8 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
 
                 // Only send state if we have more blocks
                 if our_blocks <= their_blocks {
-                    let body = serde_json::json!({"status": "up_to_date", "blocks": our_blocks}).to_string();
+                    let body = serde_json::json!({"status": "up_to_date", "blocks": our_blocks})
+                        .to_string();
                     return warp::http::Response::builder()
                         .header("Content-Type", "application/json")
                         .body(body.into_bytes())
@@ -2830,8 +2831,11 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                 let _ = encoder.write_all(json.as_bytes());
                 let compressed = encoder.finish().unwrap_or_default();
 
-                println!("📤 REST /sync/full: {} blocks, {:.1} KB compressed",
-                    our_blocks, compressed.len() as f64 / 1024.0);
+                println!(
+                    "📤 REST /sync/full: {} blocks, {:.1} KB compressed",
+                    our_blocks,
+                    compressed.len() as f64 / 1024.0
+                );
 
                 warp::http::Response::builder()
                     .header("Content-Type", "application/octet-stream")
@@ -4421,8 +4425,8 @@ async fn rest_sync_from_peer(
         let socks_url = std::env::var("LOS_SOCKS5_PROXY")
             .or_else(|_| std::env::var("LOS_TOR_SOCKS5"))
             .unwrap_or_else(|_| "socks5h://127.0.0.1:9050".to_string());
-        let proxy = reqwest::Proxy::all(&socks_url)
-            .map_err(|e| format!("SOCKS5 proxy error: {}", e))?;
+        let proxy =
+            reqwest::Proxy::all(&socks_url).map_err(|e| format!("SOCKS5 proxy error: {}", e))?;
         reqwest::Client::builder()
             .proxy(proxy)
             .timeout(Duration::from_secs(120))
@@ -4438,7 +4442,10 @@ async fn rest_sync_from_peer(
     let url = format!("http://{}/sync/full?blocks={}", peer_host, our_blocks);
     println!("📡 REST sync: fetching {}", url);
 
-    let resp = client.get(&url).send().await
+    let resp = client
+        .get(&url)
+        .send()
+        .await
         .map_err(|e| format!("HTTP request failed: {}", e))?;
 
     if !resp.status().is_success() {
@@ -4446,13 +4453,16 @@ async fn rest_sync_from_peer(
     }
 
     // Check Content-Type — if JSON, peer says we're up-to-date
-    let content_type = resp.headers()
+    let content_type = resp
+        .headers()
         .get("content-type")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
 
-    let body_bytes = resp.bytes().await
+    let body_bytes = resp
+        .bytes()
+        .await
         .map_err(|e| format!("Failed to read response body: {}", e))?;
 
     if content_type.contains("application/json") {
@@ -4468,11 +4478,12 @@ async fn rest_sync_from_peer(
     let decoder = GzDecoder::new(&body_bytes[..]);
     let mut limited = decoder.take(MAX_DECOMPRESSED);
     let mut json_str = String::new();
-    limited.read_to_string(&mut json_str)
+    limited
+        .read_to_string(&mut json_str)
         .map_err(|e| format!("Decompression failed: {}", e))?;
 
-    let incoming: Ledger = serde_json::from_str(&json_str)
-        .map_err(|e| format!("JSON parse failed: {}", e))?;
+    let incoming: Ledger =
+        serde_json::from_str(&json_str).map_err(|e| format!("JSON parse failed: {}", e))?;
 
     // Compare state roots — skip if identical
     let incoming_root = incoming.compute_state_root();
@@ -4547,8 +4558,7 @@ async fn rest_sync_from_peer(
     // Sync reward pool for reward/fee blocks
     for blk in incoming.blocks.values() {
         if blk.block_type == BlockType::Mint
-            && (blk.link.starts_with("REWARD:EPOCH:")
-                || blk.link.starts_with("FEE_REWARD:EPOCH:"))
+            && (blk.link.starts_with("REWARD:EPOCH:") || blk.link.starts_with("FEE_REWARD:EPOCH:"))
         {
             let mut pool = safe_lock(reward_pool);
             pool.sync_reward_from_gossip(&blk.account, blk.amount);
@@ -4574,7 +4584,10 @@ async fn rest_sync_from_peer(
     }
 
     if crypto_invalid > 0 {
-        println!("⚠️ REST sync: {} blocks failed crypto validation (skipped)", crypto_invalid);
+        println!(
+            "⚠️ REST sync: {} blocks failed crypto validation (skipped)",
+            crypto_invalid
+        );
     }
 
     Ok(added_count)
@@ -7167,9 +7180,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         &rest_sync_rp,
                         &rest_sync_sm,
                         &rest_sync_db,
-                    ).await {
+                    )
+                    .await
+                    {
                         Ok(added) if added > 0 => {
-                            println!("✅ REST sync from {} complete: {} new blocks merged", peer_host, added);
+                            println!(
+                                "✅ REST sync from {} complete: {} new blocks merged",
+                                peer_host, added
+                            );
                             stale_ticks = 0;
                             last_block_count = safe_lock(&rest_sync_ledger).blocks.len();
                             synced = true;
@@ -8188,11 +8206,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             }
 
-                        } else if data.starts_with("SYNC_VIA_REST:") {
+                        } else if let Some(payload) = data.strip_prefix("SYNC_VIA_REST:") {
                             // FORMAT: SYNC_VIA_REST:<host:port>|<their_block_count>
                             // Peer's state is too large for gossip — use HTTP REST to pull full state.
                             // Uses | separator to avoid collision with : in host:port
-                            let payload = &data["SYNC_VIA_REST:".len()..];
                             let parts: Vec<&str> = payload.splitn(2, '|').collect();
                             if parts.len() >= 2 {
                                 let peer_host = parts[0].to_string();
