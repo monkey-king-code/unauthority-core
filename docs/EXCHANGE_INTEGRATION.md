@@ -1,4 +1,4 @@
-# Exchange Integration Guide — Unauthority (LOS) v2.1.0
+# Exchange Integration Guide — Unauthority (LOS) v2.2.0
 
 Complete RPC documentation for cryptocurrency exchanges, custodians, and payment processors integrating LOS.
 

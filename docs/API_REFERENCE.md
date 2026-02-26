@@ -1,4 +1,4 @@
-# API Reference — Unauthority (LOS) v2.1.0
+# API Reference — Unauthority (LOS) v2.2.0
 
 Complete REST API and gRPC API documentation for the `los-node` validator binary.
 

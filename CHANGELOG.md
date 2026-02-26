@@ -6,6 +6,41 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [2.2.0] — 2026-02-27
+
+> **Scope:** State root integrity upgrade + orphan block cleanup. Protocol-level change requiring mainnet reset.
+
+### Changed
+
+- **`compute_state_root()`** — Now hashes `(address, balance, block_count, head)` per account (previously balance-only). Detects ghost blocks that corrupt chain structure, not just balance divergence. *(Protocol breaking — requires network-wide upgrade.)*
+- **All block count APIs** (`/node-info`, `/block`, `/blocks/recent`, `/health`) — Use `total_chain_blocks()` (sum of account chain counts) instead of `l.blocks.len()` (HashMap size). Excludes orphaned blocks from reported counts.
+- **`/account/:addr` transaction history** — Now walks the account chain from head→previous for deterministic newest→oldest order. Previously used arbitrary HashMap iteration.
+- **`/blocks/recent`** — Filters blocks through chain-walk validation, showing only blocks in valid account chains.
+- **Version bumped to 2.2.0** across all 10 Rust crates.
+
+### Added
+
+- **`Ledger::total_chain_blocks()`** — Returns sum of `block_count` across all accounts (orphan-safe).
+- **`Ledger::remove_orphaned_blocks()`** — Walks all account chains via head→previous links, removes blocks not reachable from any chain. Called at startup and after every sync path.
+- **Orphan cleanup at 4 points:** node startup, REST sync merge, SYNC_GZIP fast-path adoption, SYNC_GZIP slow-path merge.
+
+### Fixed
+
+- **Ghost block bug** — MINE_BLOCK gossip handler had a direct insertion fallback that bypassed `process_block()` validation, creating orphaned blocks in `l.blocks` HashMap with broken chain linkage. Root cause of block count mismatch between nodes (VPS2=39, VPS1=38). Removed direct insertion; blocks now recover via periodic SYNC_REQUEST.
+- **Deadlock in slow-path sync** — `safe_lock(&ledger)` was called after slow-path loop while the outer scope still held the lock. Now reuses the existing `l` guard.
+- **GossipSub "Duplicate" log spam** — Suppressed normal duplicate message warnings in small mesh networks.
+
+### Security
+
+- **State root now tamper-evident for chain structure** — Previous balance-only hash could not detect orphaned blocks or head divergence between nodes. The new hash covers the full account state tuple.
+
+### Flutter Apps
+
+- **flutter_validator v2.1.0** — No changes required. All API field types (`block_height`, `height`, `blocks`) are JSON numbers; Dart `json.decode` handles `u64`/`usize` identically.
+- **flutter_wallet v2.1.0** — No changes required. Same JSON wire format compatibility.
+
+---
+
 ## [2.1.0] — 2026-02-25
 
 > **Scope:** Full mainnet audit release — all Rust crates + Flutter apps bumped to v2.1.0.
