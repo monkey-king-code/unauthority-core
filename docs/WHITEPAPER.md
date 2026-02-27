@@ -829,10 +829,9 @@ Clearnet (IP/domain) is also supported but Tor is recommended for validator anon
 
 | Configuration | Behavior |
 |--------------|----------|
-| `LOS_TOR_ENABLED=true` | Auto-generate `.onion` via Tor control port |
+| *(none set)* | Auto-detect Tor SOCKS5 at `127.0.0.1:9050`; auto-generate `.onion` via Tor control port if available; fall back to clearnet if Tor unavailable |
 | `LOS_ONION_ADDRESS=x.onion` | Use manual `.onion` address |
-| `LOS_HOST_ADDRESS=ip:port` | Clearnet mode |
-| (none) | Auto-detect Tor; fall back to clearnet |
+| `LOS_HOST_ADDRESS=ip:port` | Clearnet mode (IP or domain) |
 
 ### 13.3 Security Properties
 

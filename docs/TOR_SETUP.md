@@ -23,15 +23,15 @@ Complete guide to configuring Tor hidden services for Unauthority validators and
 
 ## Why Tor?
 
-Unauthority runs **exclusively** on Tor hidden services:
+Tor is **strongly recommended** for Unauthority validators:
 
 - **No IP exposure** — validators cannot be DDoS'd by IP
 - **No DNS** — `.onion` addresses are cryptographically derived
-- **No clearnet dependency** — Tor strongly recommended for validator anonymity
+- **Privacy by default** — Tor strongly recommended for validator anonymity
 - **NAT traversal** — works behind any firewall/router
 - **Censorship resistant** — cannot be blocked by IP/domain
 
-Both Mainnet and Testnet run on the live Tor network. There is no `localhost`-only testing mode.
+Validators can also run on clearnet (IP/domain) via `LOS_HOST_ADDRESS`, but Tor is the recommended transport for maximum privacy. The 4 genesis bootstrap validators run exclusively on `.onion`.
 
 ---
 

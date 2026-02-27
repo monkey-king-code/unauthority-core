@@ -6,7 +6,7 @@ System design, crate structure, data flow, and technical decisions for the Unaut
 
 ## System Overview
 
-Unauthority is a block-lattice (DAG) blockchain where each account maintains its own chain of blocks. A global ledger state is maintained via aBFT consensus across validators communicating exclusively over Tor hidden services.
+Unauthority is a block-lattice (DAG) blockchain where each account maintains its own chain of blocks. A global ledger state is maintained via aBFT consensus across validators communicating over Tor hidden services (recommended) or clearnet (IP/domain).
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -100,7 +100,7 @@ aBFT consensus engine, validator coordination, and accountability.
 
 ### los-network
 
-Networking layer — all traffic over Tor.
+Networking layer — Tor recommended, clearnet also supported.
 
 | Module | Purpose |
 |---|---|

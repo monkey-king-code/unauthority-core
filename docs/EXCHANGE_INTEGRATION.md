@@ -28,7 +28,7 @@ Complete RPC documentation for cryptocurrency exchanges, custodians, and payment
 
 ## Overview
 
-Unauthority (LOS) is a block-lattice (DAG) blockchain using post-quantum Dilithium5 cryptography. The network operates exclusively over Tor hidden services (`.onion` addresses). The native currency is **LOS** with atomic unit **CIL** (1 LOS = 10^11 CIL).
+Unauthority (LOS) is a block-lattice (DAG) blockchain using post-quantum Dilithium5 cryptography. The network is **strongly recommended** to run over Tor hidden services (`.onion` addresses) for privacy, though clearnet (IP/domain) is also supported. The native currency is **LOS** with atomic unit **CIL** (1 LOS = 10^11 CIL).
 
 | Property | Value |
 |---|---|
@@ -37,7 +37,7 @@ Unauthority (LOS) is a block-lattice (DAG) blockchain using post-quantum Dilithi
 | **Precision** | 11 decimal places (1 LOS = 100,000,000,000 CIL) |
 | **Total Supply** | 21,936,236 LOS (fixed, non-inflationary) |
 | **Block Time** | ~2-3 seconds (finality) |
-| **Network** | Tor hidden services (.onion) exclusively |
+| **Network** | Tor hidden services (.onion) recommended; clearnet supported |
 | **Cryptography** | CRYSTALS-Dilithium5 (Post-Quantum, NIST FIPS 204) |
 | **API Protocol** | REST (JSON) and gRPC (Protocol Buffers) |
 | **Address Format** | Base58, prefix `LOS` (e.g., `LOSX7dStdPkS9U4MFCmDQfpmvrbMa5WAZfQX1`) |
@@ -74,7 +74,7 @@ These are the genesis validator `.onion` addresses for initial peer discovery:
 
 ### Tor SOCKS5 Proxy
 
-All connections to LOS nodes require a Tor SOCKS5 proxy. Install Tor and use the SOCKS5 proxy at `127.0.0.1:9050`.
+All connections to LOS nodes are **recommended** to go through a Tor SOCKS5 proxy for privacy. Install Tor and use the SOCKS5 proxy at `127.0.0.1:9050`. If a validator runs on clearnet (IP/domain), direct connections are also possible.
 
 **Example (curl):**
 ```bash
@@ -167,7 +167,7 @@ LOS addresses are Base58-encoded SHA-3 hashes of Dilithium5 public keys:
 | Utility | GET | `/block` | Latest block |
 | Utility | GET | `/blocks/recent` | Recent blocks |
 | Utility | GET | `/metrics` | Prometheus metrics |
-| Utility | GET | `/fee-info` | Current fee information |
+| Utility | GET | `/fee-estimate/{address}` | Current fee information |
 
 ---
 
@@ -226,11 +226,12 @@ GET /bal/{deposit_address}
 **Response:**
 ```json
 {
-  "status": "ok",
   "address": "LOSX7dStdPkS9U4MFCmDQfpmvrbMa5WAZfQX1",
-  "balance": "1050.00000000000",
+  "balance_los": "1050.00000000000",
   "balance_cil": 105000000000000,
-  "pending_receives": 0
+  "balance_cil_str": "105000000000000",
+  "block_count": 1,
+  "head": "a1b2c3..."
 }
 ```
 
@@ -304,20 +305,20 @@ Where `amount_cil_string` is the amount converted to CIL as a string (e.g., `"10
 Transaction fees use a **flat fee model** — every transaction costs a fixed `BASE_FEE_CIL`:
 
 ```
-GET /fee-info
+GET /fee-estimate/{address}
 ```
 
 ```json
 {
-  "status": "ok",
-  "base_fee_cil": 1000000,
-  "current_multiplier": 1,
-  "effective_fee_cil": 1000000,
-  "effective_fee_los": "0.00001000000"
+  "address": "LOSX7dStdPkS9U4MFCmDQfpmvrbMa5WAZfQX1",
+  "base_fee_cil": 100000,
+  "estimated_fee_cil": 100000,
+  "fee_multiplier": 1,
+  "fee_multiplier_bps": 10000
 }
 ```
 
-- **Base fee:** 0.00001 LOS (1,000,000 CIL) — flat per transaction
+- **Base fee:** 0.000001 LOS (100,000 CIL) — flat per transaction
 - **Anti-spam:** Rate limiter applies 2× multiplier for addresses exceeding 10 tx/sec (security mechanism, not fee scaling)
 - Fees are automatically calculated and deducted
 
@@ -333,11 +334,12 @@ GET /bal/{address}
 
 ```json
 {
-  "status": "ok",
   "address": "LOSX7dStdPkS9U4MFCmDQfpmvrbMa5WAZfQX1",
-  "balance": "1000.00000000000",
+  "balance_los": "1000.00000000000",
   "balance_cil": 100000000000000,
-  "pending_receives": 0
+  "balance_cil_str": "100000000000000",
+  "block_count": 0,
+  "head": "0"
 }
 ```
 
@@ -585,7 +587,8 @@ def send_withdrawal(to_address, amount):
 
 ### Tor Connectivity
 
-- All communication MUST go through Tor SOCKS5 proxy
+- All communication is **strongly recommended** to go through Tor SOCKS5 proxy for privacy
+- Clearnet connections to validators running on IP/domain are also supported
 - Never expose validator `.onion` addresses alongside clearnet infrastructure
 - Set appropriate timeouts (30s recommended for Tor)
 - Implement connection retry logic with exponential backoff

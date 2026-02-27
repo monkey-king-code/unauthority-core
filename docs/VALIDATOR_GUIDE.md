@@ -300,7 +300,8 @@ journalctl -u los-node -n 100 --no-pager
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `LOS_WALLET_PASSWORD` | **Yes (mainnet)** | — | Password to encrypt/decrypt wallet keypair |
-| `LOS_ONION_ADDRESS` | No | Auto from Tor dir | This node's `.onion` address for network identity |
+| `LOS_HOST_ADDRESS` | No | — | Node host address (IP, domain, or `.onion`). Clearnet or Tor. |
+| `LOS_ONION_ADDRESS` | No | Auto from Tor dir | This node's `.onion` address (backward compat; prefer `LOS_HOST_ADDRESS`) |
 | `LOS_SOCKS5_PROXY` | No | Auto `127.0.0.1:9050` | Tor SOCKS5 proxy for outbound connections |
 | `LOS_BOOTSTRAP_NODES` | No | Auto from genesis | Comma-separated `host:port` list of bootstrap peers |
 | `LOS_NODE_ID` | No | `node-{port}` | Human-readable node identifier for logs |

@@ -6,6 +6,23 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [2.2.1] — 2026-02-27
+
+> **Scope:** Documentation accuracy audit — align all `.md` files with actual codebase.
+
+### Fixed (Documentation)
+
+- **SECURITY.md** — Supported version updated from `2.0.1` to `2.2.x`.
+- **EXCHANGE_INTEGRATION.md** — Corrected "Tor exclusively" to "Tor recommended; clearnet supported". Fixed nonexistent `GET /fee-info` endpoint → actual `GET /fee-estimate/{address}`. Fixed `BASE_FEE_CIL` from `1,000,000` to `100,000` (matching code). Updated `/bal` response format to match actual API (removed `status`, `pending_receives`; added `balance_cil_str`, `block_count`, `head`).
+- **ARCHITECTURE.md** — Corrected "exclusively over Tor" to "over Tor (recommended) or clearnet".
+- **TOR_SETUP.md** — Corrected "runs exclusively on Tor" to "Tor strongly recommended". Added clearnet alternative documentation.
+- **WHITEPAPER.md** — Replaced nonexistent `LOS_TOR_ENABLED=true` env var with actual auto-detect behavior in Transport Modes table.
+- **MINING_GUIDE.md** — Fixed wrong git clone URL (`unauthority/` → `monkey-king-code/`). Replaced nonexistent `--generate-key` flag with actual wallet auto-generation on first launch. Replaced nonexistent `LOS_TOR_ENABLED=true` with actual Tor auto-detection behavior.
+- **VALIDATOR_GUIDE.md** — Added missing `LOS_HOST_ADDRESS` environment variable to config table.
+- **README.md** — Added missing `LOS_HOST_ADDRESS` environment variable to env table.
+
+---
+
 ## [2.2.0] — 2026-02-27
 
 > **Scope:** State root integrity upgrade + orphan block cleanup. Protocol-level change requiring mainnet reset.

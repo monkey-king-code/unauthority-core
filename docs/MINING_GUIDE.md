@@ -14,7 +14,7 @@ The mining algorithm uses SHA3-256, which is CPU-friendly — GPUs and ASICs hav
 
 ```bash
 # Clone the repository
-git clone https://github.com/unauthority/unauthority-core.git
+git clone https://github.com/monkey-king-code/unauthority-core.git
 cd unauthority-core
 
 # Build from source (requires Rust 1.75+)
@@ -23,11 +23,14 @@ cargo build --release --features mainnet -p los-node
 
 ### 2. Generate Your Wallet
 
+Your wallet is automatically generated on first launch. Start the node and note your address:
+
 ```bash
-./target/release/los-node --generate-key
+export LOS_WALLET_PASSWORD='your-strong-password'
+./target/release/los-node --port 3030
 # Output:
-#   Address: LOS1a2b3c4d...
-#   Keys saved to: ~/.los/keys/
+#   🔑 New wallet created: LOS1a2b3c4d...
+#   Keys saved to: node_data/node-3030/
 ```
 
 Save your address — mining rewards go directly to this address.
@@ -238,11 +241,13 @@ The mining thread runs in the background while your node validates blocks, parti
 For maximum privacy, run your mining node behind Tor:
 
 ```bash
-# Node auto-detects Tor and generates a .onion address
-LOS_TOR_ENABLED=true ./target/release/los-node --mine
+# Node auto-detects Tor SOCKS5 at 127.0.0.1:9050 and generates a .onion address
+./target/release/los-node --mine
 ```
 
-Your mining proofs are broadcast over the Tor network. Other participants cannot determine your IP address.
+If Tor is installed and running, the node automatically detects the SOCKS5 proxy and routes all traffic through Tor. Your mining proofs are broadcast over the Tor network. Other participants cannot determine your IP address.
+
+For manual `.onion` configuration, see the [Tor Setup Guide](TOR_SETUP.md).
 
 ---
 
