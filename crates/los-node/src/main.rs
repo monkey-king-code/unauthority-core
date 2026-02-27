@@ -1825,7 +1825,6 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
     let l_info = ledger.clone();
     let ab_info = address_book.clone();
     let my_addr_info = my_address.clone();
-    let bv_info = bootstrap_validators.clone();
     let node_info_route = warp::path("node-info")
         .and(with_state((l_info, ab_info)))
         .map(
@@ -1836,9 +1835,13 @@ pub async fn start_api_server(cfg: ApiServerConfig) {
                 let total_supply = TOTAL_SUPPLY_CIL;
                 let circulating = total_supply - l_guard.distribution.remaining_supply;
 
-                // Validator count = genesis bootstrap validators
-                // (Does NOT include treasury wallets with high balances)
-                let validator_count = bv_info.len();
+                // Validator count = ALL registered validators (genesis + dynamically registered)
+                // Counts every account with is_validator == true in the ledger
+                let validator_count = l_guard
+                    .accounts
+                    .values()
+                    .filter(|acc| acc.is_validator)
+                    .count();
                 let peer_count = safe_lock(&ab).len();
                 let network = if los_core::CHAIN_ID == 1 {
                     "los-mainnet"
